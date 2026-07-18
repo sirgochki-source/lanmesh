@@ -16,8 +16,11 @@
 //	relay  -> клиент  [0x03][кадр...]                          входящий кадр
 //	relay  -> клиент  [0x04][тег(32)][peerID(16)][src "ip:port"]  bind ok + STUN
 //
-// Таблица ключуется парой (тег, peerID): тег выводится из имени+пароля, поэтому
-// посторонний не подменит запись в чужой сети, не зная пароля.
+// Таблица ключуется парой (тег, peerID). И тег, и peerID НЕсекретны (peerID
+// рассылает сигналка всем участникам), поэтому сервер не может доказать владение
+// записью и не пытается: настоящую защиту трафика даёт AEAD-шифрование кадров и
+// anti-replay на клиенте (ключа сети у ретранслятора нет). Здесь лишь потолок
+// таблицы (maxEntries) — от переполнения памяти при флуде случайными bind.
 package main
 
 import (
@@ -43,6 +46,12 @@ const (
 	maxUDP  = 2048
 	bindTTL = 90 * time.Second // не слал bind дольше — запись протухла
 	sweep   = 30 * time.Second // как часто чистим протухшие
+
+	// maxEntries — потолок таблицы. Тег и peerID несекретны (peerID рассылает
+	// сигналка), проверить пароль сервер не может, поэтому bind заводится на любой
+	// корректный по формату пакет. Без потолка поток случайных bind (десятки тысяч
+	// pps) за bindTTL раздул бы таблицу на сотни МБ и уронил сервер по памяти.
+	maxEntries = 100_000
 )
 
 // key — с кем связана запись: сеть + узел.
@@ -63,13 +72,16 @@ type table struct {
 
 func newTable() *table { return &table{m: make(map[key]entry)} }
 
-func (t *table) bind(k key, addr *net.UDPAddr) (isNew bool) {
+func (t *table) bind(k key, addr *net.UDPAddr) (isNew, accepted bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	old, ok := t.m[k]
+	if !ok && len(t.m) >= maxEntries {
+		return false, false // таблица переполнена — новую запись не заводим
+	}
 	isNew = !ok || old.addr.String() != addr.String()
 	t.m[k] = entry{addr: addr, seen: time.Now()}
-	return isNew
+	return isNew, true
 }
 
 func (t *table) lookup(k key) (*net.UDPAddr, bool) {
@@ -163,7 +175,11 @@ func main() {
 			copy(k.tag[:], pkt[1:1+tagLen])
 			copy(k.id[:], pkt[1+tagLen:1+tagLen+idLen])
 
-			if isNew := tbl.bind(k, src); isNew || *verbose {
+			isNew, ok := tbl.bind(k, src)
+			if !ok {
+				continue // таблица переполнена (флуд) — не заводим и не отвечаем ack
+			}
+			if isNew || *verbose {
 				log.Printf("bind %s сеть %s -> %s", hex.EncodeToString(k.id[:])[:8],
 					hex.EncodeToString(k.tag[:])[:8], src)
 			}

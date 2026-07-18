@@ -182,15 +182,15 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", handleIndex)
-	mux.HandleFunc("/api/state", handleState)
-	mux.HandleFunc("/api/addnetwork", handleAddNetwork)
-	mux.HandleFunc("/api/leavenetwork", handleLeaveNetwork)
-	mux.HandleFunc("/api/disconnect", handleDisconnect)
-	mux.HandleFunc("/api/sendlogs", handleSendLogs)
-	mux.HandleFunc("/api/senddiag", handleSendDiag)
-	mux.HandleFunc("/api/diagnose", handleDiagnose)
-	mux.HandleFunc("/api/settings", handleSettings)
-	mux.HandleFunc("/api/invite", handleInvite)
+	mux.HandleFunc("/api/state", guard(handleState))
+	mux.HandleFunc("/api/addnetwork", guard(handleAddNetwork))
+	mux.HandleFunc("/api/leavenetwork", guard(handleLeaveNetwork))
+	mux.HandleFunc("/api/disconnect", guard(handleDisconnect))
+	mux.HandleFunc("/api/sendlogs", guard(handleSendLogs))
+	mux.HandleFunc("/api/senddiag", guard(handleSendDiag))
+	mux.HandleFunc("/api/diagnose", guard(handleDiagnose))
+	mux.HandleFunc("/api/settings", guard(handleSettings))
+	mux.HandleFunc("/api/invite", guard(handleInvite))
 
 	go func() {
 		if err := http.Serve(ln, mux); err != nil {
@@ -573,6 +573,31 @@ func handleInvite(w http.ResponseWriter, r *http.Request) {
 	q.Set("relay", effectiveRelay(c)) // "" — осознанно «без релея»
 	link := "lanmesh://join?" + q.Encode()
 	writeJSON(w, map[string]string{"link": link}, http.StatusOK)
+}
+
+// guard закрывает локальный API от браузерной CSRF: /api/* слушает 127.0.0.1, и
+// пока панель запущена, ЛЮБАЯ открытая в обычном браузере вредоносная страница
+// иначе могла бы дёргать эти ручки (подключить к чужой сети, сменить серверы,
+// отключить). Пропускаем только запросы со своей же страницы: чужой Origin или
+// Sec-Fetch-Site=cross-site/same-site отбиваем. Тело ограничиваем — заодно от DoS.
+//
+// Это НЕ защита от других локальных процессов (они выставят любой заголовок и так
+// же могут прочитать эту же страницу) — для того нужен именованный pipe с ACL;
+// здесь закрыт именно веб-вектор.
+func guard(next http.HandlerFunc) http.HandlerFunc {
+	self := "http://" + listenAddr
+	return func(w http.ResponseWriter, r *http.Request) {
+		if o := r.Header.Get("Origin"); o != "" && o != self {
+			http.Error(w, "cross-origin запрещён", http.StatusForbidden)
+			return
+		}
+		if s := r.Header.Get("Sec-Fetch-Site"); s != "" && s != "same-origin" && s != "none" {
+			http.Error(w, "cross-site запрещён", http.StatusForbidden)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 МБ хватает любому нашему телу
+		next(w, r)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any, status int) {

@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirgochki-source/lanmesh/internal/crypto"
@@ -22,11 +23,14 @@ type TUN interface {
 	Write(pkt []byte) (int, error)
 }
 
-// Раскладка расшифрованного кадра: [0]=тип, [1:17]=PeerID отправителя, [17:]=нагрузка.
+// Раскладка расшифрованного кадра: [0]=тип, [1:17]=PeerID отправителя,
+// [17:25]=счётчик (anti-replay, big-endian), [25:]=нагрузка. Счётчик внутри AEAD —
+// подделать его без ключа нельзя, а окно приёма (peerState) режет повторы.
 const (
-	frameHeader = 1 + 16
-	maxPacket   = 1500 // MTU виртуальной сети
-	maxFrame    = frameHeader + maxPacket
+	frameCounterOff = 1 + 16
+	frameHeader     = 1 + 16 + 8
+	maxPacket       = 1500 // MTU виртуальной сети
+	maxFrame        = frameHeader + maxPacket
 )
 
 // Интервалы обслуживания.
@@ -89,6 +93,13 @@ type network struct {
 	name   string
 	peers  map[proto.PeerID]*peerState
 	byIP   map[netip.Addr]*peerState
+
+	// sendCtr — исходящий счётчик кадров (anti-replay), общий для всех получателей в
+	// этой сети (мы — единственный отправитель со своим PeerID). Засеян временем
+	// старта, а не нулём: после перезапуска узла счётчик стартует ЗАВЕДОМО выше, чем
+	// был у нас в прошлой сессии, — иначе приёмник у пиров отбросил бы наши кадры как
+	// «старые». Атомарный: seal зовут из нескольких горутин.
+	sendCtr atomic.Uint64
 }
 
 type peerState struct {
@@ -109,6 +120,12 @@ type peerState struct {
 	// absentSince — когда пир пропал из ответа сигналки; ноль = он там есть.
 	// Нужен, чтобы не сносить пира по одной осечке сигналки, см. SyncPeers.
 	absentSince time.Time
+
+	// Anti-replay: скользящее окно принятых счётчиков этого отправителя. recvMax —
+	// наибольший принятый счётчик, recvBits — битовая маска последних 64 (бит i =
+	// принят ли recvMax-i). См. acceptCounter.
+	recvMax  uint64
+	recvBits uint64
 
 	// Замер задержки. pingAt — момент отправки ping с номером pingSeq; обнуляется
 	// при получении ответа. Время только локальное (монотонное), часы пиров не
@@ -177,13 +194,15 @@ func (e *Engine) AddNetwork(tag [relayTagLen]byte, sealer *crypto.Sealer, name s
 		n.name = name
 		return
 	}
-	e.nets[tag] = &network{
+	nw := &network{
 		tag:    tag,
 		sealer: sealer,
 		name:   name,
 		peers:  make(map[proto.PeerID]*peerState),
 		byIP:   make(map[netip.Addr]*peerState),
 	}
+	nw.sendCtr.Store(uint64(time.Now().UnixNano())) // засев выше прошлой сессии
+	e.nets[tag] = nw
 }
 
 // RemoveNetwork отключает сеть по тегу вместе с её таблицей пиров.
@@ -400,10 +419,10 @@ func (e *Engine) SyncPeers(tag [relayTagLen]byte, list []proto.PeerInfo) {
 		if err != nil || id == e.selfID {
 			continue
 		}
-		vip, err := netip.ParseAddr(info.VirtualIP)
-		if err != nil {
-			continue
-		}
+		// VirtualIP считаем САМИ из PeerID, а не берём из ответа сигналки/пира: иначе
+		// участник (или поддельная сигналка) мог бы назвать чужой vip и увести на
+		// себя весь трафик к тому пиру. Присланный info.VirtualIP игнорируем.
+		vip := proto.VirtualIP(id)
 		seen[id] = true
 
 		eps := make([]*net.UDPAddr, 0, len(info.Endpoints))
@@ -568,12 +587,17 @@ func (e *Engine) netToTun() error {
 		}
 
 		var senderID proto.PeerID
-		copy(senderID[:], plain[1:frameHeader])
+		copy(senderID[:], plain[1:frameCounterOff])
 		typ := plain[0]
+		counter := binary.BigEndian.Uint64(plain[frameCounterOff:frameHeader])
 		payload := plain[frameHeader:]
 
 		e.mu.Lock()
 		ps := nw.peers[senderID]
+		if ps != nil && !ps.acceptCounter(counter) {
+			e.mu.Unlock()
+			continue // повтор/устаревший кадр (anti-replay) — молча дропаем
+		}
 		if ps != nil {
 			if viaRelay {
 				// Через ретранслятор: пир жив, но прямая дырка НЕ пробита.
@@ -984,13 +1008,41 @@ func (e *Engine) writeFrameRelay(n *network, dstID proto.PeerID, typ byte, paylo
 	e.conn.WriteToUDP(pkt, relay)
 }
 
-// seal собирает и шифрует кадр [тип|selfID|payload] ключом сети n.
+// seal собирает и шифрует кадр [тип|selfID|счётчик|payload] ключом сети n.
 func (e *Engine) seal(n *network, typ byte, payload []byte) ([]byte, error) {
 	frame := make([]byte, frameHeader+len(payload))
 	frame[0] = typ
-	copy(frame[1:frameHeader], e.selfID[:])
+	copy(frame[1:frameCounterOff], e.selfID[:])
+	binary.BigEndian.PutUint64(frame[frameCounterOff:frameHeader], n.sendCtr.Add(1))
 	copy(frame[frameHeader:], payload)
 	return n.sealer.Seal(frame)
+}
+
+// acceptCounter — anti-replay: принять ли кадр со счётчиком c от этого пира.
+// Обновляет скользящее окно. Вызывать под e.mu. Счётчики отправителя монотонно
+// растут (network.sendCtr), поэтому повтор или заметно устаревший кадр отбрасываем.
+func (ps *peerState) acceptCounter(c uint64) bool {
+	const window = 64
+	if c > ps.recvMax {
+		if shift := c - ps.recvMax; shift >= window {
+			ps.recvBits = 0
+		} else {
+			ps.recvBits <<= shift
+		}
+		ps.recvBits |= 1 // бит 0 = сам recvMax
+		ps.recvMax = c
+		return true
+	}
+	offset := ps.recvMax - c
+	if offset >= window {
+		return false // за окном — слишком старый
+	}
+	mask := uint64(1) << offset
+	if ps.recvBits&mask != 0 {
+		return false // повтор
+	}
+	ps.recvBits |= mask
+	return true
 }
 
 // sendRelayBind напоминает ретранслятору наш адрес в сети n, чтобы нам было куда
@@ -1019,7 +1071,9 @@ func sameAddr(a, b *net.UDPAddr) bool {
 // кандидаты пира — доливаем в его список, чтобы перепробиться на новый адрес.
 func (e *Engine) handleAddr(ps *peerState, reflex string, cands []string) {
 	e.mu.Lock()
-	changed := reflex != "" && reflex != e.selfReflex
+	// reflex приходит от пира — валидируем формат (как relay/STUN пути), иначе
+	// мусорный/чужой адрес ушёл бы в наш собственный анонс на сигналку с приоритетом.
+	changed := reflex != "" && validEndpoint(reflex) && reflex != e.selfReflex
 	if changed {
 		e.selfReflex = reflex
 	}

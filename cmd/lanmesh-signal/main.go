@@ -50,6 +50,14 @@ const (
 	logMaxKeep  = 2000             // строк на сеть — чтобы память не росла
 	maxBody     = 256 << 10        // 256 КБ хватит с запасом
 	sweepEvery  = 5 * time.Minute
+
+	// Потолки реестра. Тег сети — несекретный хэш, и /register/log заводят запись на
+	// ЛЮБОЙ корректный по формату тег без доказательства владения сетью. Без потолков
+	// поток запросов со случайными тегами/ID раздул бы реестр (сети × пиры × логи) до
+	// OOM ещё до первой уборки (sweepEvery). Значения с большим запасом над реальной
+	// компанией друзей, но ограничивают память сверху.
+	maxNets        = 1000
+	maxPeersPerNet = 256
 )
 
 var (
@@ -93,15 +101,6 @@ type registry struct {
 
 func newRegistry() *registry { return &registry{nets: make(map[string]*network)} }
 
-func (r *registry) net(tag string) *network {
-	n := r.nets[tag]
-	if n == nil {
-		n = &network{peers: make(map[string]peerRec)}
-		r.nets[tag] = n
-	}
-	return n
-}
-
 // register кладёт пира и возвращает остальных живых участников той же сети.
 // srcIP — реальный адрес запроса; по нему ловим коллизию (двое за одним
 // внешним IP — общий VPN-выход/NAT: тогда сервер их не различит по адресу).
@@ -109,8 +108,20 @@ func (r *registry) register(tag string, self peerInfo, srcIP string) []peerInfo 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	n := r.net(tag)
+	n := r.nets[tag]
+	if n == nil {
+		if len(r.nets) >= maxNets {
+			log.Printf("реестр переполнен (%d сетей) — регистрация %s отклонена", len(r.nets), self.ID[:8])
+			return nil
+		}
+		n = &network{peers: make(map[string]peerRec)}
+		r.nets[tag] = n
+	}
 	now := time.Now()
+	if _, exists := n.peers[self.ID]; !exists && len(n.peers) >= maxPeersPerNet {
+		log.Printf("сеть переполнена (%d узлов) — регистрация %s отклонена", len(n.peers), self.ID[:8])
+		return nil
+	}
 	n.peers[self.ID] = peerRec{info: self, seen: now, srcIP: srcIP}
 
 	out := make([]peerInfo, 0, len(n.peers))
@@ -134,7 +145,14 @@ func (r *registry) register(tag string, self peerInfo, srcIP string) []peerInfo 
 func (r *registry) addLog(tag string, b logBatch) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	n := r.net(tag)
+	n := r.nets[tag]
+	if n == nil {
+		if len(r.nets) >= maxNets {
+			return // реестр переполнен — логи для новой сети не заводим
+		}
+		n = &network{peers: make(map[string]peerRec)}
+		r.nets[tag] = n
+	}
 	n.logs = append(n.logs, b)
 	trimLogs(n)
 }

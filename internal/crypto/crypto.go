@@ -42,16 +42,23 @@ type Sealer struct {
 }
 
 // NewSealer строит Sealer на сетевом ключе.
+//
+// XChaCha20-Poly1305 (расширенный 24-байтный нонс), а не обычный ChaCha20-Poly1305:
+// нонс случайный на каждый пакет, а при 12 байтах вероятность его повтора на одном
+// статичном сетевом ключе за годы игрового трафика (миллиарды пакетов) выходит за
+// безопасный предел birthday-bound, а коллизия нонса ломает и конфиденциальность, и
+// целостность. 24 байта отодвигают этот предел за пределы достижимого. Защиту от
+// повторов (replay) даёт отдельный счётчик в заголовке кадра, см. пакет peer.
 func NewSealer(key [KeySize]byte) (*Sealer, error) {
-	aead, err := chacha20poly1305.New(key[:])
+	aead, err := chacha20poly1305.NewX(key[:])
 	if err != nil {
-		return nil, fmt.Errorf("chacha20poly1305: %w", err)
+		return nil, fmt.Errorf("xchacha20poly1305: %w", err)
 	}
 	return &Sealer{aead: aead}, nil
 }
 
-// Seal шифрует plaintext. Формат на проводе: nonce(12) || ciphertext || tag(16).
-// Нонс случайный на каждый пакет — при трафике игры коллизия практически исключена.
+// Seal шифрует plaintext. Формат на проводе: nonce(24) || ciphertext || tag(16).
+// Нонс случайный на каждый пакет (см. NewSealer про XChaCha и размер нонса).
 func (s *Sealer) Seal(plaintext []byte) ([]byte, error) {
 	nonce := make([]byte, s.aead.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
