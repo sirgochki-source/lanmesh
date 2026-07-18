@@ -246,8 +246,10 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 // Мультисеть: если уже есть другие сети, эта добавляется к ним, а не заменяет.
 func handleAddNetwork(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Network  string `json:"network"`
-		Password string `json:"password"`
+		Network  string   `json:"network"`
+		Password string   `json:"password"`
+		Signals  []string `json:"signals"` // из приглашения; пусто = не трогать
+		Relay    *string  `json:"relay"`   // из приглашения; nil = не трогать, "" = без релея
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, map[string]string{"error": "bad json"}, http.StatusBadRequest)
@@ -259,6 +261,9 @@ func handleAddNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Серверы из приглашения принимаем ДО поднятия узла (на ходу их менять нельзя).
+	note := applyInviteServers(req.Signals, req.Relay)
+
 	if err := sess.AddNetwork(req.Network, req.Password); err != nil {
 		writeJSON(w, map[string]string{"error": err.Error()}, http.StatusInternalServerError)
 		return
@@ -269,7 +274,88 @@ func handleAddNetwork(w http.ResponseWriter, r *http.Request) {
 	saveConfig(cfg)
 	cfgMu.Unlock()
 
-	writeJSON(w, map[string]bool{"ok": true}, http.StatusOK)
+	resp := map[string]any{"ok": true}
+	if note != "" {
+		resp["note"] = note
+	}
+	writeJSON(w, resp, http.StatusOK)
+}
+
+// applyInviteServers принимает сигналки/релей из приглашения, чтобы друг попал в те
+// же серверы, что и пригласивший. Возвращает заметку для показа (""=молча приняли).
+//
+// Правила осторожные: (1) меняем только пока узел снят — на ходу подмена сигналок
+// это гонка, да и уже поднятые сети разъедутся; (2) если у друга уже свои кастомные
+// серверы — НЕ перетираем их (это его выбор и общая настройка всех его сетей),
+// только предупреждаем. На чистом клиенте (дефолты) — просто принимаем.
+func applyInviteServers(rawSignals []string, relay *string) string {
+	var sigs []string
+	for _, u := range rawSignals {
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			continue
+		}
+		sigs = append(sigs, u)
+	}
+	wantSignals := len(sigs) > 0
+	wantRelay := relay != nil
+	if !wantSignals && !wantRelay {
+		return ""
+	}
+
+	cfgMu.Lock()
+	c := cfg
+	cfgMu.Unlock()
+
+	newSignals := effectiveSignals(c)
+	if wantSignals {
+		newSignals = sigs
+	}
+	newRelay := effectiveRelay(c)
+	if wantRelay {
+		newRelay = *relay
+	}
+	// Уже такие же — ничего делать не нужно (и не поднимаем шум).
+	if sameStrings(newSignals, effectiveSignals(c)) && newRelay == effectiveRelay(c) {
+		return ""
+	}
+	if len(c.Signals) > 0 || c.Relay != nil {
+		return "у тебя настроены свои серверы — из приглашения их не менял"
+	}
+
+	if err := sess.SetSignalURLs(newSignals); err != nil {
+		return "чтобы принять серверы из приглашения, сначала отключись от сетей"
+	}
+	sess.UseRelay(newRelay)
+
+	cfgMu.Lock()
+	if wantSignals {
+		cfg.Signals = sigs
+	}
+	if wantRelay {
+		rr := *relay
+		cfg.Relay = &rr
+	}
+	saveConfig(cfg)
+	cfgMu.Unlock()
+	log.Printf("серверы приняты из приглашения: сигналок %d, relay %q", len(newSignals), newRelay)
+	return ""
+}
+
+// sameStrings — равны ли два списка по порядку и составу.
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // handleLeaveNetwork выходит из сети по её тегу и убирает её из сохранённого списка.
@@ -432,8 +518,14 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true}, http.StatusOK)
 }
 
-// handleInvite отдаёт ссылку-приглашение lanmesh://join?net=…&pass=… для сети с
-// указанным тегом (?tag=<hex>). Имя+пароль берём из сохранённого списка сетей.
+// handleInvite отдаёт ссылку-приглашение lanmesh://join?net=…&pass=…[&sig=…&relay=…]
+// для сети с указанным тегом (?tag=<hex>). Имя+пароль берём из сохранённого списка.
+//
+// В ссылку добавляем СВОИ сигналки/релей — но только если они кастомные: чтобы
+// попасть в ту же сеть, друг должен ходить в те же серверы, а стандартные и так
+// вшиты в его клиент. Дефолты не кладём — и ссылка короче, и адреса по умолчанию
+// не мелькают лишний раз. Кастомные адреса в приглашении раскрываются осознанно:
+// без них друг просто не соберётся с нами в одну сеть.
 func handleInvite(w http.ResponseWriter, r *http.Request) {
 	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
 
@@ -445,13 +537,28 @@ func handleInvite(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
+	sigs := append([]string(nil), cfg.Signals...)
+	var relay *string
+	if cfg.Relay != nil {
+		r := *cfg.Relay
+		relay = &r
+	}
 	cfgMu.Unlock()
 
 	if name == "" {
 		writeJSON(w, map[string]string{"link": "", "note": "сеть не найдена"}, http.StatusOK)
 		return
 	}
-	link := "lanmesh://join?net=" + url.QueryEscape(name) + "&pass=" + url.QueryEscape(pass)
+	q := url.Values{}
+	q.Set("net", name)
+	q.Set("pass", pass)
+	for _, u := range sigs { // только кастомные (cfg.Signals пусто = дефолт)
+		q.Add("sig", u)
+	}
+	if relay != nil { // задан явно; "" — осознанно «без релея»
+		q.Set("relay", *relay)
+	}
+	link := "lanmesh://join?" + q.Encode()
 	writeJSON(w, map[string]string{"link": link}, http.StatusOK)
 }
 

@@ -340,16 +340,26 @@ async function poll() {
 $("#addBtn").onclick = async () => {
   const name = $("#network").value.trim(), pass = $("#password").value;
   const err = $("#addErr");
-  err.style.display = "none";
+  err.style.display = "none"; err.style.color = "var(--err)";
   if (!name || !pass) { err.textContent = "Нужны имя сети и пароль."; err.style.display = "block"; return; }
   const btn = $("#addBtn"); btn.disabled = true; btn.textContent = "Добавляю…";
+  // Серверы из приглашения прикладываем, только если инвайт относится к этой сети.
+  const body = { network:name, password:pass };
+  const inv = parseInvite($("#invite").value);
+  if ($("#invite").value.trim() && inv.net === name) {
+    if (inv.sigs.length) body.signals = inv.sigs;
+    if (inv.relay !== null) body.relay = inv.relay;
+  }
   try {
     const r = await fetch("/api/addnetwork", { method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({ network:name, password:pass }) });
+      body: JSON.stringify(body) });
     const j = await r.json();
     if (!r.ok) { err.textContent = "Ошибка: " + (j.error||r.status); err.style.display = "block"; }
-    else { $("#network").value=""; $("#password").value=""; $("#invite").value=""; }
-  } catch(e) { err.textContent = "Ошибка: " + e.message; err.style.display = "block"; }
+    else {
+      $("#network").value=""; $("#password").value=""; $("#invite").value="";
+      if (j.note) { err.style.color = "var(--warn)"; err.textContent = j.note; err.style.display = "block"; }
+    }
+  } catch(e) { err.style.color = "var(--err)"; err.textContent = "Ошибка: " + e.message; err.style.display = "block"; }
   btn.disabled = false; btn.textContent = "Добавить сеть"; poll();
 };
 
@@ -416,12 +426,24 @@ $("#diagSend").onclick = async () => {
 // Ссылка вида lanmesh://join?net=…&pass=… — воспринимаем как текст: другу не
 // нужно вбивать имя+пароль руками, а нам — регистрировать URL-протокол (каждый
 // клик плодил бы новый elevated-инстанс с UAC).
+// Разбираем query-строку инвайта. Значения кодированы через url.Values.Encode
+// (Go): пробел = "+", остальное %xx — поэтому сначала "+"→пробел, потом decodeURI.
 function parseInvite(text) {
   text = (text || "").trim();
-  let net = null, pass = null;
-  const m = text.match(/[?&]net=([^&]*)/); if (m) net = decodeURIComponent(m[1]);
-  const p = text.match(/[?&]pass=([^&]*)/); if (p) pass = decodeURIComponent(p[1]);
-  return { net, pass };
+  const qi = text.indexOf("?");
+  const q = qi >= 0 ? text.slice(qi + 1) : text;
+  let net = null, pass = null, sigs = [], relay = null;
+  for (const part of q.split("&")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    const k = part.slice(0, eq);
+    const v = decodeURIComponent(part.slice(eq + 1).replace(/\+/g, " "));
+    if (k === "net") net = v;
+    else if (k === "pass") pass = v;
+    else if (k === "sig") sigs.push(v);
+    else if (k === "relay") relay = v;
+  }
+  return { net, pass, sigs, relay };
 }
 $("#invite").addEventListener("input", () => {
   const { net, pass } = parseInvite($("#invite").value);
