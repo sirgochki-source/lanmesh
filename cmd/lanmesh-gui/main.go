@@ -347,11 +347,13 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 		cfgMu.Lock()
 		c := cfg
 		cfgMu.Unlock()
+		// Сами адреса серверов НЕ отдаём в панель — чтобы личные сигналки/релей не
+		// светились в UI (тултипы, поля настроек). Только метаданные: сколько
+		// настроено и свои это или стандартные. Ввести кастомные всё равно можно.
 		writeJSON(w, map[string]any{
-			"signals":  effectiveSignals(c),
-			"relay":    effectiveRelay(c),
-			"custom":   len(c.Signals) > 0 || c.Relay != nil,
-			"defaults": map[string]any{"signals": defaultSignalURLs, "relay": defaultRelayAddr},
+			"custom":      len(c.Signals) > 0 || c.Relay != nil,
+			"signalCount": len(effectiveSignals(c)),
+			"hasRelay":    effectiveRelay(c) != "",
 		}, http.StatusOK)
 		return
 	}

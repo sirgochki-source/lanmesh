@@ -283,11 +283,14 @@ function dotsHTML(sigMeta, presence) {
   sigMeta = sigMeta || [];
   return sigMeta.map((s, i) => {
     let cls = "sigdot", tip;
-    if (!s.up) { cls += " down"; tip = s.host + " — недоступна тебе"; }
+    // Адрес сигналки НЕ показываем — нейтральная метка по номеру, чтобы личные
+    // домены не светились в тултипах.
+    const label = "сигналка " + (i + 1);
+    if (!s.up) { cls += " down"; tip = label + " — недоступна тебе"; }
     else if (presence) {
-      if (presence[i]) { cls += " on"; tip = s.host + " — участник виден здесь"; }
-      else { cls += " off"; tip = s.host + " — жива, но участника тут нет"; }
-    } else { cls += " on"; tip = s.host + " — доступна"; }
+      if (presence[i]) { cls += " on"; tip = label + " — участник виден здесь"; }
+      else { cls += " off"; tip = label + " — жива, но участника тут нет"; }
+    } else { cls += " on"; tip = label + " — доступна"; }
     return '<span class="' + cls + '" title="' + esc(tip) + '"></span>';
   }).join("");
 }
@@ -415,7 +418,7 @@ $("#invite").addEventListener("input", () => {
 });
 
 // --- настройки серверов ----------------------------------------------------
-const defaultCfgNote = "Пустые поля = стандартные сервера. Менять можно только когда сеть отключена.";
+const defaultCfgNote = "Адреса настроенных серверов скрыты. Впиши свои, чтобы переопределить; пусто = оставить как есть. Менять можно только когда сеть отключена.";
 let settingsLoaded = false;
 
 function setSettingsEditable(ok) {
@@ -428,9 +431,12 @@ function setSettingsEditable(ok) {
 async function loadSettings() {
   try {
     const s = await (await fetch("/api/settings")).json();
-    $("#cfgSignals").value = (s.signals || []).join("\n");
-    $("#cfgRelay").value = s.relay || "";
-    $("#settingsHint").textContent = s.custom ? "своё" : "по умолчанию";
+    // Реальные адреса НЕ показываем — только сколько настроено. Поля пустые: их
+    // заполняют, только если хотят задать свои серверы.
+    $("#cfgSignals").value = "";
+    $("#cfgRelay").value = "";
+    $("#settingsHint").textContent = (s.custom ? "свои" : "стандартные") +
+      " · " + (s.signalCount || 0) + " сигналок" + (s.hasRelay ? " + релей" : "");
     settingsLoaded = true;
   } catch(e) { /* оставим поля как есть */ }
 }
@@ -447,22 +453,27 @@ $("#cfgSave").onclick = async () => {
   const signals = $("#cfgSignals").value.split("\n").map(s => s.trim()).filter(Boolean);
   const relay = $("#cfgRelay").value.trim();
   const note = $("#cfgNote");
+  // Пустое сохранение НЕ трогает серверы (иначе случайный «Сохранить» с пустыми
+  // полями сбросил бы всё на плейсхолдеры и оборвал связь). Чтобы переопределить —
+  // впиши полный набор своих сигналок.
+  if (!signals.length) { note.textContent = "Впиши свои сигналки (по одной на строку), чтобы переопределить. Пусто ничего не меняет."; return; }
   try {
     const r = await fetch("/api/settings", { method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ signals, relay }) });
     const j = await r.json();
-    if (r.ok) { note.textContent = "Сохранено."; settingsLoaded = false; loadSettings(); }
+    if (r.ok) { note.textContent = "Сохранено."; $("#cfgSignals").value=""; $("#cfgRelay").value=""; settingsLoaded = false; loadSettings(); }
     else note.textContent = "Ошибка: " + (j.error || r.status);
   } catch(e) { note.textContent = "Ошибка: " + e.message; }
 };
 
 $("#cfgReset").onclick = async () => {
   const note = $("#cfgNote");
+  if (!confirm("Сбросить сервера к встроенным (плейсхолдерам)? Связь оборвётся, пока не впишешь свои адреса.")) return;
   try {
     await fetch("/api/settings", { method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ signals: [], relay: "" }) });
     settingsLoaded = false; await loadSettings();
-    note.textContent = "Сброшено к стандартным.";
+    note.textContent = "Сброшено к встроенным.";
   } catch(e) { note.textContent = "Ошибка: " + e.message; }
 };
 
