@@ -204,8 +204,8 @@ func main() {
 		Debug: false,
 		WindowOptions: webview2.WindowOptions{
 			Title:  "lanmesh",
-			Width:  560,
-			Height: 660,
+			Width:  430,
+			Height: 640,
 			Center: true,
 		},
 	})
@@ -213,7 +213,7 @@ func main() {
 		log.Fatal("не удалось создать окно (нужен WebView2 Runtime — component из Microsoft Edge)")
 	}
 	defer w.Destroy()
-	w.SetSize(460, 520, webview2.HintMin)
+	w.SetSize(360, 480, webview2.HintMin)
 	w.Navigate("http://" + listenAddr)
 	w.Run()
 	sess.Stop()
