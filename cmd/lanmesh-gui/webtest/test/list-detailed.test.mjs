@@ -35,10 +35,28 @@ test('peerRowDetailed экранирует peer.status в бейдже (клас
   assert.match(s, /badge direct&quot;&gt;&lt;script&gt;1&lt;\/script&gt;/);
 });
 
-test('renderDetailed map/traffic — заглушки «скоро»', () => {
+test('renderDetailed map — заглушка «скоро» (Phase 4)', () => {
   const st = { running: true, selfEndpoint: 'x', networks: [{ name: 'n', tag: 't', signals: [], peers: [] }] };
   assert.match(renderDetailed(st, 'map', {}), /скоро/i);
-  assert.match(renderDetailed(st, 'traffic', {}), /скоро/i);
+});
+
+test('renderDetailed traffic — делегирует в renderTraffic (Phase 3, больше не заглушка)', () => {
+  const st = {
+    running: true, selfEndpoint: 'x', networks: [{
+      name: 'n', tag: 't', signals: [],
+      peers: [{ name: 'A', vip: '1.1.1.1', status: 'direct', rttMs: 10, bytesRx: 2048, bytesTx: 1024 }],
+    }],
+  };
+  const s = renderDetailed(st, 'traffic', {}, undefined, { '1.1.1.1': { rxRate: 100, txRate: 50 } });
+  // "Скорость" (плитка) сама по себе содержит подстроку "скоро" — сверяемся с точной фразой
+  // старой заглушки (soon()), а не с расплывчатым /скоро/i.
+  assert.doesNotMatch(s, /Трафик — скоро/i);
+  assert.match(s, />A</);
+});
+
+test('renderDetailed traffic — без активных сетей ведёт себя как остальные виды (подсказка, не падает)', () => {
+  const st = { running: true, selfEndpoint: 'x', networks: [] };
+  assert.match(renderDetailed(st, 'traffic', {}), /Нет активных сетей/);
 });
 
 test('renderDetailed settings — делегирует в renderSettings (Task 13)', () => {
@@ -58,10 +76,22 @@ test('renderDetailed list содержит плитку качества', () =>
   assert.match(renderDetailed(st, 'list', {}), /Качество/);
 });
 
-test('renderDetailed list: плитка «Трафик» — заглушка без выдуманных цифр', () => {
+test('renderDetailed list: плитка «Трафик» показывает реальный накопленный трафик и текущую скорость', () => {
+  const st = {
+    running: true, selfEndpoint: 'x', networks: [{
+      name: 'n', tag: 't', signals: [],
+      peers: [{ name: 'A', vip: '1.1.1.1', status: 'direct', rttMs: 10, bytesRx: 2048, bytesTx: 0 }],
+    }],
+  };
+  const s = renderDetailed(st, 'list', {}, undefined, { '1.1.1.1': { rxRate: 512, txRate: 0 } });
+  assert.doesNotMatch(s, /Phase 3/);
+  assert.match(s, /2\.0 КБ/);   // 2048 rx + 0 tx = 2048 Б = 2.0 КБ, накопленный тотал плитки
+});
+test('renderDetailed list: плитка «Трафик» без данных — честный ноль, не заглушка', () => {
   const st = { running: true, selfEndpoint: 'x', networks: [{ name: 'n', tag: 't', signals: [], peers: [] }] };
   const s = renderDetailed(st, 'list', {});
-  assert.match(s, /Phase 3/);
+  assert.doesNotMatch(s, /Phase 3/);
+  assert.match(s, /0 Б/);
 });
 
 test('renderDetailed list: без активных сетей — подсказка, не падает', () => {

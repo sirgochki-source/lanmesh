@@ -369,3 +369,23 @@ input:disabled, textarea:disabled, button:disabled {
 
 button:disabled, .btn:disabled, .btn-primary:disabled, .btn-ghost:disabled,
 textarea:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ==================== Phase 3: вид «Трафик» ==================== */
+/* Строка пира: .drow (Task 11) + узкая полоса нагрузки между именем и цифрами. */
+.trow { gap: 14px; }
+.tbar-wrap {
+  flex: 1; min-width: 30px; height: 6px; border-radius: 999px;
+  background: rgba(255,255,255,.06); overflow: hidden;
+}
+.tbar { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), #22d3ee); }
+/* Колонка ↓RX/↑TX: накопленное значение в строке, скорость под ним мельче и приглушённей —
+   тот же приём, что у .tile .big/.sub (Task 11), чтобы не заводить отдельный визуальный язык. */
+.tcell {
+  display: flex; align-items: baseline; flex-wrap: wrap; justify-content: flex-end;
+  column-gap: 4px; width: 108px; flex: none; font-variant-numeric: tabular-nums;
+}
+.tcell .tarr { font-size: 11px; color: var(--fg-mut); }
+.tcell.rx .tarr { color: var(--accent-2); }  /* приём — тот же мятный акцент, что у direct/good */
+.tcell.tx .tarr { color: var(--relay); }     /* отдача — тот же голубой, что у relay */
+.tcell .tval { font-size: 12.5px; font-weight: 600; color: var(--fg); }
+.tcell .trate { flex-basis: 100%; text-align: right; font-size: 10px; color: var(--fg-mut); }

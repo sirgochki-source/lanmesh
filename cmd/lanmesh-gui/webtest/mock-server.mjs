@@ -10,9 +10,36 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=u
   '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' };
 
 let current = process.argv[2] && SCENARIOS[process.argv[2]] ? process.argv[2] : DEFAULT;
-// Небольшой джиттер RTT между опросами — чтобы sparkline «оживал».
-const jitter = (s) => { for (const n of s.networks) for (const p of n.peers)
-  if (p.rttMs >= 0) p.rttMs = Math.max(1, +(p.rttMs + (Math.sin(Date.now() / 700 + p.rttMs) * 6)).toFixed(1)); return s; };
+const START = Date.now();
+// Стабильный хэш vip → детерминированная (но разная у разных пиров) скорость роста
+// байтовых счётчиков, без внешних зависимостей (FNV-1a).
+function vipHash(vip) {
+  let h = 2166136261;
+  for (let i = 0; i < vip.length; i++) { h ^= vip.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+// Небольшой джиттер RTT между опросами — чтобы sparkline «оживал». Заодно растим
+// bytesRx/bytesTx монотонно от времени жизни сервера (elapsedSec × стабильная per-peer
+// скорость) — SCENARIOS[current]() каждый раз создаёт свежие объекты пиров (bytesRx/bytesTx
+// из scenarios.mjs всегда 0), поэтому «накопление» тут не через мутацию предыдущего
+// снимка, а через elapsed-время — не менее монотонно и не требует хранить состояние между опросами.
+// «Подключающиеся» (rttMs < 0) трафика не гоняют — у них 0, как и в проде.
+const jitter = (s) => {
+  const elapsedSec = (Date.now() - START) / 1000;
+  for (const n of s.networks) for (const p of n.peers) {
+    if (p.rttMs >= 0) {
+      p.rttMs = Math.max(1, +(p.rttMs + (Math.sin(Date.now() / 700 + p.rttMs) * 6)).toFixed(1));
+      const h = vipHash(p.vip);
+      const rxRate = 4000 + (h % 60000);           // ~4–64 КБ/с, стабильно на пира
+      const txRate = 1500 + ((h >>> 16) % 20000);  // ~1.5–21.5 КБ/с
+      p.bytesRx = Math.floor(elapsedSec * rxRate);
+      p.bytesTx = Math.floor(elapsedSec * txRate);
+    } else {
+      p.bytesRx = 0; p.bytesTx = 0;
+    }
+  }
+  return s;
+};
 
 const json = (res, obj, code = 200) => { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); };
 

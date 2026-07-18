@@ -19,6 +19,15 @@ export function fmtSeen(ms) {
   if (ms < 2000) return 'только что';
   return Math.round(ms / 1000) + ' с назад';
 }
+// Человекочитаемые байты, база 1024: < 1024 — целое число ("N Б"), дальше один знак
+// после запятой ("1.2 КБ"/"3.4 МБ"/"2.1 ГБ"...). Нечисловой/отрицательный ввод — как 0.
+export function fmtBytes(n) {
+  if (!(n >= 1024)) return Math.round(n || 0) + ' Б';
+  const units = ['КБ', 'МБ', 'ГБ', 'ТБ'];
+  let v = n / 1024, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(1) + ' ' + units[i];
+}
 export function plural(n, one, few, many) {
   const d = n % 10, dd = n % 100;
   if (d === 1 && dd !== 11) return one;

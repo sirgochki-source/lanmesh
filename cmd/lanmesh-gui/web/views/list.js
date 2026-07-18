@@ -1,10 +1,11 @@
 // Компактный список участников: узкие карточки-строки без аватарок,
 // точка-статус слева, IP и пинг справа (см. docs/superpowers/design-mockups/03-compact-final.html).
 import { dispName, esc } from '../lib/sanitize.js';
-import { fmtRtt, rttClass, fmtUptime, plural } from '../lib/format.js';
+import { fmtRtt, rttClass, fmtUptime, plural, fmtBytes } from '../lib/format.js';
 import { quality } from '../lib/quality.js';
 import { sparklineSVG } from '../lib/sparkline.js';   // реально используется с Task 12 (накопление истории)
 import { renderSettings } from './settings.js';
+import { renderTraffic, netTrafficTotals } from './traffic.js';
 
 const pngHtml = (peer) => {
   if (peer.status === 'connecting') return '<span class="png conn">подключение…</span>';
@@ -65,9 +66,10 @@ export function addFormHtml(open) {
 }
 
 // Диспетчер видов. history в compact не нужна — только detailed (спарклайн).
-export function renderView(state, mode, view, histories = {}, activeNetTag) {
+// rates — снимок текущих скоростей (Phase 3, см. computeRates()/app.js), тоже только detailed.
+export function renderView(state, mode, view, histories = {}, activeNetTag, rates = {}) {
   if (mode === 'compact') return renderCompact(state);
-  return window.renderDetailed ? window.renderDetailed(state, view, histories, activeNetTag) : renderCompact(state);
+  return window.renderDetailed ? window.renderDetailed(state, view, histories, activeNetTag, rates) : renderCompact(state);
 }
 
 /* ==================== Task 11: подробный режим — Sidebar Dashboard ====================
@@ -108,20 +110,25 @@ export function qualityTile(net) {
 
 const soon = (text) => `<div class="dmain"><div class="soon">${text}</div></div>`;
 
-export function renderDetailed(state, view, histories = {}, activeNetTag) {
+export function renderDetailed(state, view, histories = {}, activeNetTag, rates = {}) {
   const nets = state.networks || [];
   const net = nets.find(n => n.tag === activeNetTag) || nets[0];
   if (view === 'settings') return renderSettings(state);
   if (view === 'map') return soon('◎ Карта сети — скоро (Phase 4).');
-  if (view === 'traffic') return soon('▮ Трафик — скоро (Phase 3).');
+  // !net — раньше 'traffic': renderTraffic() ожидает реальную сеть, а не строит на пустом месте
+  // «сеть по умолчанию»; при отсутствии сетей вида «Трафик» без данных нет смысла (та же логика,
+  // что уже была у общего списка ниже).
   if (!net) return soon('Нет активных сетей. Добавь сеть в компактном режиме.');
+  if (view === 'traffic') return renderTraffic(net, rates);
   const peers = (net.peers || []).slice().sort(cmpVip);
   const rows = peers.map(p => peerRowDetailed(p, histories[p.vip] || [])).join('') || '<div class="empty">Пока никого.</div>';
+  const traf = netTrafficTotals(net, rates);
   return `<div class="dmain"><div class="dhd"><div><div class="title">${dispName(net.name)}</div>`
     + `<div class="sub">${peers.length} ${plural(peers.length, 'участник', 'участника', 'участников')}</div></div><span class="grow"></span>`
     + `<button class="btn-ghost" data-invite="${esc(net.tag)}">⧉ Пригласить</button></div>`
     + `<div class="tiles">${qualityTile(net)}`
-    + `<div class="tile"><div class="k">Трафик</div><div class="big dim">— <small>Phase 3</small></div></div>`
+    + `<div class="tile"><div class="k">Трафик</div><div class="big">${fmtBytes(traf.rx + traf.tx)}</div>`
+    + `<div class="sub">${fmtBytes(traf.rate)}/с</div></div>`
     + `<div class="tile"><div class="k">Участников</div><div class="big">${peers.length}</div></div></div>`
     + `<div class="drows">${rows}</div></div>`;
 }

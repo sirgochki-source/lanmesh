@@ -2,6 +2,7 @@
 const peer = (name, vip, status, rttMs, signals = [true]) => ({
   name, vip, status, endpoint: status === 'direct' ? '203.0.113.7:41234' : '',
   lastSeenMs: status === 'connecting' ? -1 : 800, rttMs, signals,
+  bytesRx: 0, bytesTx: 0,   // shape parity с /api/state (Phase 3); mock-server.jitter() растит их со временем
 });
 const net = (name, tag, peers, signals = [{ host: 's1', up: true }], signalError = '') =>
   ({ name, tag, signalError, signals, peers });

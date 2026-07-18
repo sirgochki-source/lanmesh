@@ -4,6 +4,7 @@ import { diffPeers } from './lib/peerdiff.js';
 import { collectPeers } from './lib/collect.js';
 import { dispName } from './lib/sanitize.js';
 import { parseInvite } from './lib/invite.js';
+import { computeRates } from './lib/traffic.js';
 
 const POLL_MS = 1300;
 let mode = localStorage.getItem('lm-mode') || pickMode(innerWidth);
@@ -21,10 +22,28 @@ const histSnapshot = () => {
   return o;
 };
 
+// Трафик (Phase 3): prevBytes/prevBytesAt — предыдущий кумулятивный снимок bytesRx/bytesTx
+// и момент его получения, для computeRates() в следующем ingest(). currentRates — снимок
+// байт/сек с последнего расчёта, отдаётся наружу через ratesSnapshot() (как histSnapshot()).
+let prevBytes = {};
+let prevBytesAt = 0;
+let currentRates = {};
+const ratesSnapshot = () => currentRates;
+// Плоский снимок кумулятивных байт всех пиров всех сетей — аналог collectPeers(), но не через
+// него: collectPeers() уже законтрактован (см. live.test.mjs) на {vip,name,rttMs,status}, тянуть
+// туда bytesRx/bytesTx означало бы расширять чужой публичный контракт ради локальной надобности.
+function flattenBytes(state) {
+  const out = {};
+  for (const n of state.networks || []) for (const p of n.peers || [])
+    out[p.vip] = { rx: p.bytesRx || 0, tx: p.bytesTx || 0 };
+  return out;
+}
+
 // Накопление истории пинга + тосты вход/выход. Вызывается ровно раз на РЕАЛЬНЫЙ опрос
 // (из poll(), не из render()) — иначе UI-only перерисовки (переключение режима/вида/сети,
 // ResizeObserver), которые зовут render(lastState) с уже обработанным состоянием, дублировали
 // бы точки в RttHistory тем же самым значением rttMs при каждом клике между опросами.
+// Та же причина не даёт считать rates в render(): дельта считается между РЕАЛЬНЫМИ опросами.
 function ingest(state) {
   const peers = collectPeers(state);
   for (const p of peers) rttHistory.push(p.vip, p.rttMs ?? -1);
@@ -35,6 +54,13 @@ function ingest(state) {
     for (const p of left) toast(`${dispName(p.name)} вышел`, 'out');
   }
   prevPeers = peers;
+
+  const curBytes = flattenBytes(state);
+  const now = Date.now();
+  const dtSec = prevBytesAt ? (now - prevBytesAt) / 1000 : 0;   // 0 на первом опросе — нет prev, computeRates() отдаст нули
+  currentRates = computeRates(prevBytes, curBytes, dtSec);
+  prevBytes = curBytes;
+  prevBytesAt = now;
 }
 function toast(text, kind) {
   const el = document.createElement('div');
@@ -56,7 +82,7 @@ function render(state, fromPoll = false) {
   if (fromPoll && viewEl.contains(document.activeElement)) {
     // пропускаем: пользователь взаимодействует с формой внутри #view
   } else if (window.renderView) {
-    viewEl.innerHTML = window.renderView(state, mode, activeView, histSnapshot(), activeNetTag);
+    viewEl.innerHTML = window.renderView(state, mode, activeView, histSnapshot(), activeNetTag, ratesSnapshot());
   }
 }
 async function poll() {
