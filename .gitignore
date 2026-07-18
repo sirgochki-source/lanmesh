@@ -34,3 +34,6 @@ Thumbs.db
 
 # design-PDF содержат личные адреса — не коммитим
 docs/*.pdf
+
+# служебные файлы subagent-driven-development (брифы/отчёты/ledger)
+.superpowers/
