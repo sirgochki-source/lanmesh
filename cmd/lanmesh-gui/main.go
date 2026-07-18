@@ -518,30 +518,24 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true}, http.StatusOK)
 }
 
-// handleInvite отдаёт ссылку-приглашение lanmesh://join?net=…&pass=…[&sig=…&relay=…]
+// handleInvite отдаёт ссылку-приглашение lanmesh://join?net=…&pass=…&sig=…&relay=…
 // для сети с указанным тегом (?tag=<hex>). Имя+пароль берём из сохранённого списка.
 //
-// В ссылку добавляем СВОИ сигналки/релей — но только если они кастомные: чтобы
-// попасть в ту же сеть, друг должен ходить в те же серверы, а стандартные и так
-// вшиты в его клиент. Дефолты не кладём — и ссылка короче, и адреса по умолчанию
-// не мелькают лишний раз. Кастомные адреса в приглашении раскрываются осознанно:
-// без них друг просто не соберётся с нами в одну сеть.
+// В ссылку ВСЕГДА кладём наши эффективные сигналки/релей (и кастомные, и дефолтные):
+// чтобы попасть в ту же сеть, друг должен ходить в те же серверы. Дублируются они с
+// его настройками или нет — разбирается уже клиент при входе (applyInviteServers).
+// Дефолты и так вшиты в его бинарь, так что раскрытие адресов тут ничего не добавляет.
 func handleInvite(w http.ResponseWriter, r *http.Request) {
 	tag := strings.TrimSpace(r.URL.Query().Get("tag"))
 
 	cfgMu.Lock()
+	c := cfg
 	var name, pass string
 	for _, p := range cfg.Networks {
 		if tag == "" || netTag(p.Name, p.Password) == tag {
 			name, pass = p.Name, p.Password
 			break
 		}
-	}
-	sigs := append([]string(nil), cfg.Signals...)
-	var relay *string
-	if cfg.Relay != nil {
-		r := *cfg.Relay
-		relay = &r
 	}
 	cfgMu.Unlock()
 
@@ -552,12 +546,10 @@ func handleInvite(w http.ResponseWriter, r *http.Request) {
 	q := url.Values{}
 	q.Set("net", name)
 	q.Set("pass", pass)
-	for _, u := range sigs { // только кастомные (cfg.Signals пусто = дефолт)
+	for _, u := range effectiveSignals(c) {
 		q.Add("sig", u)
 	}
-	if relay != nil { // задан явно; "" — осознанно «без релея»
-		q.Set("relay", *relay)
-	}
+	q.Set("relay", effectiveRelay(c)) // "" — осознанно «без релея»
 	link := "lanmesh://join?" + q.Encode()
 	writeJSON(w, map[string]string{"link": link}, http.StatusOK)
 }
