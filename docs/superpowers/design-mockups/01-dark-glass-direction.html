@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lanmesh — Command Glass</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 30px 24px 56px; background: #08090c; color: #e8eaf0;
+    font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  .head { max-width: 900px; margin: 0 auto 24px; }
+  .head h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; letter-spacing: -.02em; }
+  .head p { margin: 0; color: #9aa2b1; font-size: 14.5px; }
+  .grid { max-width: 900px; margin: 0 auto; display: flex; flex-wrap: wrap; gap: 26px; justify-content: center; }
+  .cards { display: contents; }
+  .card { width: 330px; cursor: pointer; border-radius: 20px; padding: 6px;
+    transition: transform .18s ease; outline: 2px solid transparent; outline-offset: 5px; }
+  .card:hover { transform: translateY(-4px); }
+  .card.selected { outline-color: #37f5c5; }
+  .meta { padding: 13px 6px 2px; }
+  .meta .name { font-size: 15.5px; font-weight: 650; }
+  .meta .vibe { font-size: 13px; color: #9aa2b1; margin-top: 3px; }
+
+  /* ===== shared device ===== */
+  .device { position: relative; height: 452px; border-radius: 17px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,.07); background: #0a0d12; isolation: isolate; }
+  .glow { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+  .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+  .d-hd { position: relative; z-index: 2; display: flex; align-items: center; gap: 9px; padding: 14px 15px 12px; }
+  .wm { font-size: 15.5px; font-weight: 750; letter-spacing: -.02em; color: #7a8698; }
+  .wm b { color: #37f5c5; }
+  .pill { margin-left: auto; font-size: 11px; font-weight: 650; padding: 4px 10px; border-radius: 999px;
+    display: inline-flex; align-items: center; gap: 6px; color: #bff5e6;
+    background: rgba(55,245,197,.10); border: 1px solid rgba(55,245,197,.22); }
+  .pill .pdot { width: 6px; height: 6px; border-radius: 50%; background: #37f5c5; box-shadow: 0 0 7px #37f5c5; }
+  .gear { width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; font-size: 13px;
+    color: #7a8698; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07); }
+
+  .selfbar { position: relative; z-index: 2; margin: 0 13px 10px; padding: 9px 12px; border-radius: 12px;
+    display: flex; align-items: center; gap: 14px; font-size: 11px; color: #6d7789; }
+  .selfbar .k { display: block; font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: #57616f; }
+  .selfbar .v { font-size: 12px; color: #cdd5e1; font-weight: 600; }
+  .selfbar .up { color: #37f5c5; }
+
+  .rows { position: relative; z-index: 2; padding: 2px 11px; display: flex; flex-direction: column; gap: 7px; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 13px; }
+  .av { width: 28px; height: 28px; border-radius: 50%; flex: none; display: grid; place-items: center;
+    font-size: 11.5px; font-weight: 700; color: #fff; }
+  .av.m { background: linear-gradient(135deg,#5eead4,#2dd4bf); color:#04231d; }
+  .av.k { background: linear-gradient(135deg,#7dd3fc,#38bdf8); color:#04222e; }
+  .av.s { background: linear-gradient(135deg,#c4b5fd,#a78bfa); }
+  .av.d { background: rgba(255,255,255,.08); color:#9aa2b1; border:1px solid rgba(255,255,255,.12); }
+  .who { min-width: 0; }
+  .nm { font-size: 13px; font-weight: 600; color: #e2e7ef; white-space: nowrap; }
+  .ip { font-size: 10.5px; color: #616b7b; }
+  .grow { flex: 1; }
+  .bars { display: inline-flex; gap: 2px; align-items: flex-end; height: 13px; }
+  .bars i { width: 3px; border-radius: 1px; background: #2a3342; }
+  .bars i.on { background: #37f5c5; }
+  .bars.mid i.on { background: #ffcf5c; }
+  .badge { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; }
+  .badge.direct { background: rgba(55,245,197,.13); color: #46e6c0; }
+  .badge.relay { background: rgba(106,168,255,.15); color: #8fbaff; }
+  .badge.conn { background: rgba(255,207,92,.14); color: #ffcf5c; }
+  .png { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 40px; text-align: right; }
+  .png .u { font-size: 9px; color: #57616f; font-weight: 500; }
+  .png.good { color: #46e6c0; } .png.ok { color: #ffcf5c; } .png.bad { color: #ff8080; } .png.conn { color: #ffcf5c; }
+  .spark { display: block; margin-top: 2px; }
+
+  .foot { position: absolute; z-index: 2; left: 0; right: 0; bottom: 0; padding: 12px 14px;
+    display: flex; gap: 9px; background: linear-gradient(0deg, rgba(8,9,12,.75), transparent); }
+  .btn { flex: 1; text-align: center; font-size: 12px; font-weight: 650; padding: 9px; border-radius: 10px;
+    color: #cfd8e4; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09); }
+  .btn.pri { color: #04231d; border-color: transparent; background: linear-gradient(90deg,#37f5c5,#22d3ee); }
+
+  /* ===== V1 — subtle glass ===== */
+  .v1 .glow { background: radial-gradient(90% 60% at 80% -10%, rgba(45,212,191,.10), transparent 60%); }
+  .v1 .row { background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.06);
+    backdrop-filter: blur(8px); }
+  .v1 .selfbar { background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.055); }
+
+  /* ===== V2 — rich glass ===== */
+  .v2 .glow { background:
+    radial-gradient(70% 50% at 12% -5%, rgba(52,229,176,.20), transparent 55%),
+    radial-gradient(75% 55% at 105% 108%, rgba(139,92,246,.22), transparent 55%); }
+  .v2 .row { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.11);
+    backdrop-filter: blur(16px) saturate(1.2);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.09), 0 6px 18px rgba(0,0,0,.28); }
+  .v2 .selfbar { background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.10);
+    backdrop-filter: blur(14px); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); }
+  .v2 .pill { box-shadow: 0 0 16px rgba(55,245,197,.18); }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1>Command Glass — тёмная база + стекло. Сколько стекла?</h1>
+    <p>Слева спокойнее, справа насыщеннее (сильнее свечение и «морозное» размытие). Неоновый мятный акцент и моно-цифры одинаковы. Кликните тот, что ближе — итог можно подкрутить в любую сторону между ними.</p>
+  </div>
+
+  <div class="grid">
+    <div class="cards">
+
+      <!-- V1 -->
+      <div class="card v1" data-choice="subtle" onclick="toggleSelect(this)">
+        <div class="device">
+          <div class="glow"></div>
+          <div class="d-hd">
+            <span class="wm">lan<b>mesh</b></span>
+            <span class="pill"><span class="pdot"></span>3 в сети</span>
+            <span class="gear">⚙</span>
+          </div>
+          <div class="selfbar">
+            <span><span class="k">твой IP</span><span class="v mono">25.31.8.2</span></span>
+            <span><span class="k">внешний</span><span class="v">определён</span></span>
+            <span><span class="k">аптайм</span><span class="v up">2:14</span></span>
+          </div>
+          <div class="rows">
+            <div class="row"><span class="av m">М</span><span class="who"><span class="nm">Мурад</span><br><span class="ip mono">25.44.12.9</span></span><span class="grow"></span>
+              <span class="bars"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span>
+              <span class="badge direct">direct</span><span class="png good">18<span class="u">мс</span></span></div>
+            <div class="row"><span class="av k">K</span><span class="who"><span class="nm">Kolya</span><br><span class="ip mono">25.44.7.3</span></span><span class="grow"></span>
+              <span class="bars mid"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span>
+              <span class="badge direct">direct</span><span class="png ok">42<span class="u">мс</span></span></div>
+            <div class="row"><span class="av s">S</span><span class="who"><span class="nm">sara_pc</span><br><span class="ip mono">25.44.31.7</span></span><span class="grow"></span>
+              <span class="bars"><i class="on"></i><i class="on"></i><i></i><i></i></span>
+              <span class="badge relay">relay</span><span class="png bad">128<span class="u">мс</span></span></div>
+            <div class="row"><span class="av d">D</span><span class="who"><span class="nm">Dev_null</span><br><span class="ip mono">25.44.9.1</span></span><span class="grow"></span>
+              <span class="badge conn">подключение</span><span class="png conn">···</span></div>
+          </div>
+          <div class="foot"><span class="btn">⧉ Пригласить</span><span class="btn pri">＋ Сеть</span></div>
+        </div>
+        <div class="meta"><div class="name">Спокойное стекло</div><div class="vibe">Сдержанно, элегантно, тёмно. Стекло чувствуется, но не кричит.</div></div>
+      </div>
+
+      <!-- V2 -->
+      <div class="card v2" data-choice="rich" onclick="toggleSelect(this)">
+        <div class="device">
+          <div class="glow"></div>
+          <div class="d-hd">
+            <span class="wm">lan<b>mesh</b></span>
+            <span class="pill"><span class="pdot"></span>3 в сети</span>
+            <span class="gear">⚙</span>
+          </div>
+          <div class="selfbar">
+            <span><span class="k">твой IP</span><span class="v mono">25.31.8.2</span></span>
+            <span><span class="k">внешний</span><span class="v">определён</span></span>
+            <span><span class="k">аптайм</span><span class="v up">2:14</span></span>
+          </div>
+          <div class="rows">
+            <div class="row"><span class="av m">М</span><span class="who"><span class="nm">Мурад</span><br><span class="ip mono">25.44.12.9</span></span><span class="grow"></span>
+              <svg class="spark" width="40" height="16" viewBox="0 0 40 16"><polyline points="0,11 6,9 12,10 18,7 24,8 30,6 40,7" fill="none" stroke="#46e6c0" stroke-width="1.5"/></svg>
+              <span class="badge direct">direct</span><span class="png good">18<span class="u">мс</span></span></div>
+            <div class="row"><span class="av k">K</span><span class="who"><span class="nm">Kolya</span><br><span class="ip mono">25.44.7.3</span></span><span class="grow"></span>
+              <svg class="spark" width="40" height="16" viewBox="0 0 40 16"><polyline points="0,8 6,10 12,7 18,11 24,9 30,12 40,8" fill="none" stroke="#ffcf5c" stroke-width="1.5"/></svg>
+              <span class="badge direct">direct</span><span class="png ok">42<span class="u">мс</span></span></div>
+            <div class="row"><span class="av s">S</span><span class="who"><span class="nm">sara_pc</span><br><span class="ip mono">25.44.31.7</span></span><span class="grow"></span>
+              <svg class="spark" width="40" height="16" viewBox="0 0 40 16"><polyline points="0,5 6,9 12,4 18,10 24,6 30,11 40,7" fill="none" stroke="#ff8080" stroke-width="1.5"/></svg>
+              <span class="badge relay">relay</span><span class="png bad">128<span class="u">мс</span></span></div>
+            <div class="row"><span class="av d">D</span><span class="who"><span class="nm">Dev_null</span><br><span class="ip mono">25.44.9.1</span></span><span class="grow"></span>
+              <span class="badge conn">подключение</span><span class="png conn">···</span></div>
+          </div>
+          <div class="foot"><span class="btn">⧉ Пригласить</span><span class="btn pri">＋ Сеть</span></div>
+        </div>
+        <div class="meta"><div class="name">Насыщенное стекло <span style="font-size:10.5px;font-weight:700;color:#04231d;background:#37f5c5;padding:2px 7px;border-radius:999px">вау</span></div><div class="vibe">Свечение-аврора + морозный blur + графики пинга. Максимально «прокачанный».</div></div>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>

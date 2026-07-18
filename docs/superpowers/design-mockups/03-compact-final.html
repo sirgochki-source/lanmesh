@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lanmesh — компакт v2</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 34px 22px 60px; background: #08090c; color: #e8eaf0;
+    font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  .head { max-width: 760px; margin: 0 auto 22px; }
+  .head h1 { font-size: 21px; font-weight: 700; margin: 0 0 6px; letter-spacing: -.02em; }
+  .head p { margin: 0; color: #9aa2b1; font-size: 14px; }
+  .stage { display: flex; gap: 40px; justify-content: center; align-items: flex-start; flex-wrap: wrap; max-width: 760px; margin: 0 auto; }
+  .col-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: #6b7686; margin: 0 0 10px 4px; }
+  .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+
+  .device { position: relative; width: 300px; border-radius: 16px; overflow: hidden; isolation: isolate;
+    border: 1px solid rgba(255,255,255,.08);
+    background: radial-gradient(70% 42% at 8% -5%, rgba(52,229,176,.16), transparent 55%),
+                radial-gradient(70% 48% at 106% 108%, rgba(139,92,246,.18), transparent 55%), #0a0d12; }
+  .tbar { height: 24px; display:flex; align-items:center; gap:6px; padding:0 10px; border-bottom:1px solid rgba(255,255,255,.06); }
+  .tbar i { width:7px; height:7px; border-radius:50%; background:rgba(255,255,255,.16); }
+  .tbar .tt { margin-left:6px; font-size:10px; color:#6b7686; }
+
+  .hd { display:flex; align-items:center; gap:8px; padding:12px 12px 10px; }
+  .wm { font-size:14.5px; font-weight:750; color:#7a8698; } .wm b{color:#37f5c5;}
+  .grow { flex:1; }
+  .pill { font-size:10.5px; font-weight:650; padding:3px 9px; border-radius:999px; display:inline-flex; align-items:center; gap:5px;
+    color:#bff5e6; background:rgba(55,245,197,.10); border:1px solid rgba(55,245,197,.22); }
+  .pill .pdot { width:5px; height:5px; border-radius:50%; background:#37f5c5; box-shadow:0 0 6px #37f5c5; }
+  .iconbtn { width:24px; height:24px; border-radius:7px; display:grid; place-items:center; font-size:12px;
+    color:#9aa6b6; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.09); }
+
+  .self { display:flex; gap:10px; margin:0 11px 8px; padding:7px 10px; border-radius:10px;
+    background:rgba(255,255,255,.035); border:1px solid rgba(255,255,255,.06); font-size:10px; color:#6d7789; }
+  .self .v { display:block; font-size:11.5px; color:#cdd5e1; font-weight:600; }
+  .self .v.up { color:#46e6c0; }
+
+  /* slim vertical cards, NO avatar */
+  .rows { padding:2px 11px 58px; display:flex; flex-direction:column; gap:5px; }
+  .row { display:flex; align-items:center; gap:9px; padding:8px 11px; border-radius:11px;
+    background:rgba(255,255,255,.055); border:1px solid rgba(255,255,255,.10);
+    backdrop-filter:blur(14px) saturate(1.2); box-shadow:inset 0 1px 0 rgba(255,255,255,.08); }
+  .sdot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .sdot.direct { background:#37f5c5; box-shadow:0 0 7px #37f5c5; }
+  .sdot.relay  { background:#8fbaff; box-shadow:0 0 7px #8fbaff; }
+  .sdot.conn   { background:#ffcf5c; box-shadow:0 0 7px #ffcf5c; }
+  .nm { font-size:13px; font-weight:600; color:#e2e7ef; white-space:nowrap; }
+  .ip { font-size:11px; color:#5f6a7a; }
+  .png { font-size:13px; font-weight:700; font-variant-numeric:tabular-nums; text-align:right; min-width:52px; }
+  .png .u { font-size:9px; color:#57616f; font-weight:500; }
+  .png.good{color:#46e6c0;}.png.ok{color:#ffcf5c;}.png.bad{color:#ff8080;}.png.conn{color:#ffcf5c;font-size:10.5px;font-weight:600;}
+
+  .foot { position:absolute; left:0; right:0; bottom:0; padding:11px 12px; display:flex; gap:7px;
+    background:linear-gradient(0deg,rgba(10,13,18,.88),transparent); }
+  .btn { flex:1; text-align:center; font-size:11.5px; font-weight:650; padding:9px; border-radius:9px;
+    color:#cfd8e4; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.09); }
+  .btn.pri { color:#04231d; border-color:transparent; background:linear-gradient(90deg,#37f5c5,#22d3ee); }
+
+  .note { max-width:300px; font-size:12.5px; color:#8b95a5; }
+  .note b { color:#cdd5e1; }
+  .before .row { background:none;border:none;backdrop-filter:none;box-shadow:none;padding:6px 6px; gap:8px;}
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1>Компактный режим v2 — без аватарок, уже, вертикальные карточки</h1>
+    <p>Убрал кружки-аватарки. Слева цвет-точка статуса (мятная = direct, синяя = relay, жёлтая = подключение), имя, IP, справа пинг. Строки-карточки стали тоньше и вертикально в столбик. Так?</p>
+  </div>
+
+  <div class="stage">
+    <div>
+      <div class="col-lbl">Компакт · так теперь</div>
+      <div class="device">
+        <div class="tbar"><i></i><i></i><i></i><span class="tt">lanmesh</span></div>
+        <div class="hd">
+          <span class="wm">lan<b>mesh</b></span><span class="grow"></span>
+          <span class="pill"><span class="pdot"></span>3 в сети</span>
+          <span class="iconbtn" title="Развернуть">⤢</span>
+        </div>
+        <div class="self">
+          <span><span class="k">твой IP</span><span class="v mono">25.31.8.2</span></span>
+          <span><span class="k">внешний</span><span class="v">определён</span></span>
+          <span><span class="k">аптайм</span><span class="v up">2:14</span></span>
+        </div>
+        <div class="rows">
+          <div class="row"><span class="sdot direct"></span><span class="nm">Мурад</span><span class="grow"></span><span class="ip mono">25.44.12.9</span><span class="png good">18<span class="u">мс</span></span></div>
+          <div class="row"><span class="sdot direct"></span><span class="nm">Kolya</span><span class="grow"></span><span class="ip mono">25.44.7.3</span><span class="png ok">42<span class="u">мс</span></span></div>
+          <div class="row"><span class="sdot relay"></span><span class="nm">sara_pc</span><span class="grow"></span><span class="ip mono">25.44.31.7</span><span class="png bad">128<span class="u">мс</span></span></div>
+          <div class="row"><span class="sdot conn"></span><span class="nm">Dev_null</span><span class="grow"></span><span class="ip mono">25.44.9.1</span><span class="png conn">подключение…</span></div>
+        </div>
+        <div class="foot"><span class="btn">⧉ Пригласить</span><span class="btn pri">＋ Сеть</span></div>
+      </div>
+    </div>
+
+    <div style="max-width:300px">
+      <div class="col-lbl">что изменилось</div>
+      <div class="note">
+        <p>· <b>Аватарки убраны</b> — вместо них цветная точка статуса слева.</p>
+        <p>· <b>Строки уже и тоньше</b>, вертикальным столбиком, одна строка на участника: имя · IP · пинг.</p>
+        <p>· Стекло и неон сохранены, окно сузилось до ~300&nbsp;px.</p>
+        <p style="margin-top:14px;color:#6f7a8a">Подробный режим оставляю богаче (там аватарки и графики уместны). Если хотите — уберу аватарки и там тоже.</p>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

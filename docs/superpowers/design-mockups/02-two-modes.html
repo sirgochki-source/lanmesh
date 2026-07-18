@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lanmesh — два режима</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 30px 22px 60px; background: #08090c; color: #e8eaf0;
+    font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif; -webkit-font-smoothing: antialiased; }
+  .head { max-width: 900px; margin: 0 auto 22px; }
+  .head h1 { font-size: 22px; font-weight: 700; margin: 0 0 6px; letter-spacing: -.02em; }
+  .head p { margin: 0; color: #9aa2b1; font-size: 14.5px; }
+  .wrap { max-width: 900px; margin: 0 auto; display: flex; flex-direction: column; gap: 26px; }
+  .sect-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: #6b7686; margin-bottom: 10px; display:flex; align-items:center; gap:8px;}
+  .sect-lbl .tag { color:#04231d; background:#37f5c5; padding:1px 7px; border-radius:999px; font-weight:700; letter-spacing:.03em;}
+  .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+
+  /* shared device */
+  .device { position: relative; border-radius: 16px; overflow: hidden; isolation: isolate;
+    border: 1px solid rgba(255,255,255,.08);
+    background: radial-gradient(70% 45% at 10% -5%, rgba(52,229,176,.18), transparent 55%),
+                radial-gradient(70% 50% at 105% 108%, rgba(139,92,246,.20), transparent 55%), #0a0d12; }
+  .tbar { height: 26px; display:flex; align-items:center; gap:6px; padding:0 10px;
+    border-bottom:1px solid rgba(255,255,255,.06); }
+  .tbar i { width:8px; height:8px; border-radius:50%; background:rgba(255,255,255,.16); }
+  .tbar .tt { margin-left:8px; font-size:10.5px; color:#6b7686; }
+
+  .glassrow { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.11);
+    backdrop-filter: blur(16px) saturate(1.2); border-radius: 13px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.09), 0 6px 18px rgba(0,0,0,.28); }
+
+  .pill { font-size: 11px; font-weight: 650; padding: 4px 10px; border-radius: 999px;
+    display: inline-flex; align-items: center; gap: 6px; color: #bff5e6;
+    background: rgba(55,245,197,.10); border: 1px solid rgba(55,245,197,.22); }
+  .pill .pdot { width: 6px; height: 6px; border-radius: 50%; background: #37f5c5; box-shadow: 0 0 7px #37f5c5; }
+  .iconbtn { width: 27px; height: 27px; border-radius: 8px; display: grid; place-items: center; font-size: 13px;
+    color: #9aa6b6; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09); }
+
+  /* peer row atoms */
+  .av { width: 28px; height: 28px; border-radius: 50%; flex: none; display: grid; place-items: center; font-size: 11.5px; font-weight: 700; color: #fff; }
+  .av.m { background: linear-gradient(135deg,#5eead4,#2dd4bf); color:#04231d; }
+  .av.k { background: linear-gradient(135deg,#7dd3fc,#38bdf8); color:#04222e; }
+  .av.s { background: linear-gradient(135deg,#c4b5fd,#a78bfa); }
+  .av.d { background: rgba(255,255,255,.08); color:#9aa2b1; border:1px solid rgba(255,255,255,.12); }
+  .nm { font-size: 13px; font-weight: 600; color: #e2e7ef; white-space: nowrap; }
+  .ip { font-size: 10.5px; color: #616b7b; }
+  .bars { display:inline-flex; gap:2px; align-items:flex-end; height:13px; }
+  .bars i { width:3px; border-radius:1px; background:#2a3342; }
+  .bars i.on { background:#46e6c0; } .bars.mid i.on { background:#ffcf5c; }
+  .badge { font-size:9.5px; font-weight:700; padding:2px 7px; border-radius:999px; text-transform:uppercase; letter-spacing:.03em; }
+  .badge.direct { background:rgba(55,245,197,.13); color:#46e6c0; }
+  .badge.relay { background:rgba(106,168,255,.15); color:#8fbaff; }
+  .badge.conn { background:rgba(255,207,92,.14); color:#ffcf5c; }
+  .png { font-size:13px; font-weight:700; font-variant-numeric:tabular-nums; text-align:right; }
+  .png .u { font-size:9px; color:#57616f; font-weight:500; }
+  .png.good{color:#46e6c0;}.png.ok{color:#ffcf5c;}.png.bad{color:#ff8080;}.png.conn{color:#ffcf5c;}
+  .grow { flex:1; }
+
+  /* ---------- COMPACT ---------- */
+  .compact { width: 336px; }
+  .compact .hd { display:flex; align-items:center; gap:8px; padding:13px 13px 11px; }
+  .compact .wm { font-size:15px; font-weight:750; color:#7a8698; } .compact .wm b{color:#37f5c5;}
+  .compact .self { display:flex; gap:12px; margin:0 12px 9px; padding:8px 11px; border-radius:11px;
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.07); font-size:10.5px; color:#6d7789; }
+  .compact .self .v { display:block; font-size:12px; color:#cdd5e1; font-weight:600; }
+  .compact .self .v.up { color:#46e6c0; }
+  .compact .rows { padding:2px 10px 60px; display:flex; flex-direction:column; gap:6px; }
+  .compact .row { display:flex; align-items:center; gap:9px; padding:8px 10px; }
+  .compact .foot { position:absolute; left:0; right:0; bottom:0; padding:11px 13px; display:flex; gap:8px;
+    background:linear-gradient(0deg,rgba(10,13,18,.85),transparent); }
+  .compact .btn { flex:1; text-align:center; font-size:11.5px; font-weight:650; padding:9px; border-radius:10px;
+    color:#cfd8e4; background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.09); }
+  .compact .btn.pri { color:#04231d; border-color:transparent; background:linear-gradient(90deg,#37f5c5,#22d3ee); }
+
+  /* ---------- DETAILED ---------- */
+  .detailed { width: 100%; }
+  .dwrap { display:flex; min-height: 340px; }
+  .rail { width: 194px; flex:none; padding:12px 11px; border-right:1px solid rgba(255,255,255,.06); display:flex; flex-direction:column; gap:6px; }
+  .rail .brand { font-size:14px; font-weight:750; color:#7a8698; padding:2px 6px 8px; } .rail .brand b{color:#37f5c5;}
+  .rail .netitem { display:flex; align-items:center; gap:8px; padding:8px 9px; border-radius:10px; font-size:12px; color:#c3ccd8; }
+  .rail .netitem.on { background:rgba(55,245,197,.10); border:1px solid rgba(55,245,197,.22); color:#dbf6ee; }
+  .rail .netitem .cnt { margin-left:auto; font-size:10.5px; color:#6f7a8a; }
+  .rail .nav { margin-top:12px; display:flex; flex-direction:column; gap:3px; }
+  .rail .nav .n { display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:9px; font-size:12px; color:#8b95a5; }
+  .rail .nav .n.on { background:rgba(255,255,255,.06); color:#e2e7ef; border:1px solid rgba(255,255,255,.08); }
+  .rail .selfmini { margin-top:auto; padding:9px; border-radius:10px; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.06); font-size:10px; color:#6d7789; display:flex; align-items:center; gap:8px;}
+  .rail .selfmini .v { color:#cdd5e1; font-weight:600; font-size:11px;}
+
+  .dmain { flex:1; padding:14px 15px; min-width:0; display:flex; flex-direction:column; gap:12px; }
+  .dhd { display:flex; align-items:center; gap:10px; }
+  .dhd .title { font-size:16px; font-weight:700; color:#eaeff5; }
+  .dhd .sub { font-size:11px; color:#6f7a8a; }
+  .tiles { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .tile { padding:11px 12px; border-radius:12px; background:rgba(255,255,255,.045); border:1px solid rgba(255,255,255,.08); }
+  .tile .k { font-size:9.5px; text-transform:uppercase; letter-spacing:.05em; color:#6b7686; }
+  .tile .big { font-size:19px; font-weight:750; margin-top:3px; font-variant-numeric:tabular-nums; }
+  .tile .big small { font-size:11px; color:#6f7a8a; font-weight:600; }
+  .tbars { display:flex; gap:3px; align-items:flex-end; height:22px; margin-top:6px; }
+  .tbars i { flex:1; border-radius:2px; background:rgba(70,230,192,.45); }
+  .drows { display:flex; flex-direction:column; gap:8px; }
+  .drow { display:flex; align-items:center; gap:12px; padding:11px 13px; }
+  .spark { display:block; }
+</style>
+</head>
+<body>
+  <div class="head">
+    <h1>Два режима одного приложения — так и строим?</h1>
+    <p>Кнопкой <b>⤢</b> в шапке окно раскрывается из компактного в подробный (и обратно кнопкой «Компактно»); при ручном ресайзе переключается само по ширине. Стиль — наш насыщенный тёмно-стеклянный. Гляньте оба и скажите «ок» или что поправить.</p>
+  </div>
+
+  <div class="wrap">
+
+    <!-- COMPACT -->
+    <div>
+      <div class="sect-lbl">Компактный режим · быстрый взгляд <span class="tag">маленькое окно</span></div>
+      <div class="device compact">
+        <div class="tbar"><i></i><i></i><i></i><span class="tt">lanmesh</span></div>
+        <div class="hd">
+          <span class="wm">lan<b>mesh</b></span>
+          <span class="grow"></span>
+          <span class="pill"><span class="pdot"></span>3 в сети</span>
+          <span class="iconbtn" title="Развернуть">⤢</span>
+        </div>
+        <div class="self">
+          <span><span class="k">твой IP</span><span class="v mono">25.31.8.2</span></span>
+          <span><span class="k">внешний</span><span class="v">определён</span></span>
+          <span><span class="k">аптайм</span><span class="v up">2:14</span></span>
+        </div>
+        <div class="rows">
+          <div class="row glassrow"><span class="av m">М</span><span><span class="nm">Мурад</span><br><span class="ip mono">25.44.12.9</span></span><span class="grow"></span>
+            <span class="bars"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="badge direct">direct</span><span class="png good">18<span class="u">мс</span></span></div>
+          <div class="row glassrow"><span class="av k">K</span><span><span class="nm">Kolya</span><br><span class="ip mono">25.44.7.3</span></span><span class="grow"></span>
+            <span class="bars mid"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="badge direct">direct</span><span class="png ok">42<span class="u">мс</span></span></div>
+          <div class="row glassrow"><span class="av s">S</span><span><span class="nm">sara_pc</span><br><span class="ip mono">25.44.31.7</span></span><span class="grow"></span>
+            <span class="bars"><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="badge relay">relay</span><span class="png bad">128<span class="u">мс</span></span></div>
+          <div class="row glassrow"><span class="av d">D</span><span><span class="nm">Dev_null</span><br><span class="ip mono">25.44.9.1</span></span><span class="grow"></span>
+            <span class="badge conn">подключение</span><span class="png conn">···</span></div>
+        </div>
+        <div class="foot"><span class="btn">⧉ Пригласить</span><span class="btn pri">＋ Сеть</span></div>
+      </div>
+    </div>
+
+    <!-- DETAILED -->
+    <div>
+      <div class="sect-lbl">Подробный режим · Sidebar Dashboard <span class="tag">широкое окно</span></div>
+      <div class="device detailed">
+        <div class="tbar"><i></i><i></i><i></i><span class="tt">lanmesh — myteam</span></div>
+        <div class="dwrap">
+          <div class="rail">
+            <div class="brand">lan<b>mesh</b></div>
+            <div class="netitem on"><span class="pill" style="padding:0;background:none;border:none"><span class="pdot"></span></span>myteam<span class="cnt">3/4</span></div>
+            <div class="netitem"><span class="bars" style="height:8px"><i class="on" style="background:#8fbaff"></i></span>dota<span class="cnt">1</span></div>
+            <div class="nav">
+              <div class="n on">▤ &nbsp;Список</div>
+              <div class="n">◎ &nbsp;Карта сети</div>
+              <div class="n">▮ &nbsp;Трафик</div>
+              <div class="n">⚙ &nbsp;Настройки</div>
+            </div>
+            <div class="selfmini"><span>⬤</span><span><span class="k">ты · 25.31.8.2</span><br><span class="v">внеш определён · 2:14</span></span></div>
+          </div>
+          <div class="dmain">
+            <div class="dhd">
+              <div><div class="title">myteam</div><div class="sub">3 из 4 в сети · средний пинг 29 мс</div></div>
+              <span class="grow"></span>
+              <span class="iconbtn" title="Свернуть в компактный">⤡</span>
+              <span class="pill" style="cursor:default">⧉ Пригласить</span>
+            </div>
+            <div class="tiles">
+              <div class="tile"><div class="k">Трафик сейчас</div><div class="big">1.2<small> МБ/с ↓</small></div><div class="tbars"><i style="height:30%"></i><i style="height:55%"></i><i style="height:40%"></i><i style="height:80%"></i><i style="height:60%"></i><i style="height:70%"></i><i style="height:45%"></i></div></div>
+              <div class="tile"><div class="k">Всего прокачано</div><div class="big">3.4<small> ГБ</small></div><div class="sub" style="margin-top:6px;font-size:10.5px;color:#6f7a8a">↑ 1.1 ГБ · ↓ 2.3 ГБ</div></div>
+              <div class="tile"><div class="k">Качество связи</div><div class="big" style="color:#46e6c0">хорошее</div><div class="sub" style="margin-top:6px;font-size:10.5px;color:#6f7a8a">2 direct · 1 relay</div></div>
+            </div>
+            <div class="drows">
+              <div class="drow glassrow"><span class="av m">М</span><span style="width:120px"><span class="nm">Мурад</span><br><span class="ip mono">25.44.12.9</span></span>
+                <svg class="spark" width="120" height="24" viewBox="0 0 120 24"><polyline points="0,17 15,14 30,15 45,10 60,12 75,8 90,11 105,9 120,10" fill="none" stroke="#46e6c0" stroke-width="1.6"/></svg>
+                <span class="grow"></span><span class="bars"><i class="on"></i><i class="on"></i><i class="on"></i><i class="on"></i></span><span class="badge direct">direct</span><span class="png good">18<span class="u">мс</span></span></div>
+              <div class="drow glassrow"><span class="av k">K</span><span style="width:120px"><span class="nm">Kolya</span><br><span class="ip mono">25.44.7.3</span></span>
+                <svg class="spark" width="120" height="24" viewBox="0 0 120 24"><polyline points="0,12 15,15 30,10 45,16 60,13 75,17 90,12 105,15 120,11" fill="none" stroke="#ffcf5c" stroke-width="1.6"/></svg>
+                <span class="grow"></span><span class="bars mid"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="badge direct">direct</span><span class="png ok">42<span class="u">мс</span></span></div>
+              <div class="drow glassrow"><span class="av s">S</span><span style="width:120px"><span class="nm">sara_pc</span><br><span class="ip mono">25.44.31.7</span></span>
+                <svg class="spark" width="120" height="24" viewBox="0 0 120 24"><polyline points="0,8 15,14 30,6 45,15 60,9 75,16 90,10 105,14 120,12" fill="none" stroke="#ff8080" stroke-width="1.6"/></svg>
+                <span class="grow"></span><span class="bars"><i class="on"></i><i class="on"></i><i></i><i></i></span><span class="badge relay">relay</span><span class="png bad">128<span class="u">мс</span></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>
