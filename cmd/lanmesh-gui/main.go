@@ -19,12 +19,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jchv/go-webview2"
 	"golang.org/x/sys/windows"
 
 	"github.com/sirgochki-source/lanmesh/internal/app"
@@ -197,10 +197,25 @@ func main() {
 			log.Fatalf("panel serve: %v", err)
 		}
 	}()
-	go openBrowser("http://" + listenAddr)
 
-	// Трей держит главный поток до выхода. Выход из трея = снять сеть и закрыться.
-	runTray("http://" + listenAddr)
+	// Нативное окно (WebView2) на локальную панель — тот же UI, но не в браузере,
+	// без вкладок и адресной строки. Держит главный поток до закрытия окна.
+	w := webview2.NewWithOptions(webview2.WebViewOptions{
+		Debug: false,
+		WindowOptions: webview2.WindowOptions{
+			Title:  "lanmesh",
+			Width:  560,
+			Height: 660,
+			Center: true,
+		},
+	})
+	if w == nil {
+		log.Fatal("не удалось создать окно (нужен WebView2 Runtime — component из Microsoft Edge)")
+	}
+	defer w.Destroy()
+	w.SetSize(460, 520, webview2.HintMin)
+	w.Navigate("http://" + listenAddr)
+	w.Run()
 	sess.Stop()
 }
 
@@ -531,9 +546,4 @@ func ensureAdmin() {
 		return // не вышло — продолжим без прав, ошибка всплывёт при Start
 	}
 	os.Exit(0) // управление ушло к elevated-копии
-}
-
-func openBrowser(url string) {
-	// rundll32 открывает URL в браузере ПОД ОБЫЧНЫМ пользователем, а не под admin.
-	exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 }
