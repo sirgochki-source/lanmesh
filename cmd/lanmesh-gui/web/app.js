@@ -45,18 +45,31 @@ function toast(text, kind) {
 }
 
 function setMode(m) { mode = m; document.getElementById('root').dataset.mode = m; }
-function render(state) {
+// fromPoll=true — вызов из фонового poll() (каждые POLL_MS), а не из UI-хендлера.
+// В этом случае, пока фокус стоит внутри #view (пользователь печатает в форме добавления
+// сети/настроек), #view НЕ перерисовываем — иначе опрос стирал бы вводимый текст и фокус.
+function render(state, fromPoll = false) {
   lastState = state;
   document.getElementById('header').innerHTML = renderHeader(state, mode);
   document.getElementById('rail').innerHTML = mode === 'detailed' ? renderRail(state, activeView, activeNetTag) : '';
-  if (window.renderView) document.getElementById('view').innerHTML = window.renderView(state, mode, activeView, histSnapshot(), activeNetTag);
+  const viewEl = document.getElementById('view');
+  if (fromPoll && viewEl.contains(document.activeElement)) {
+    // пропускаем: пользователь взаимодействует с формой внутри #view
+  } else if (window.renderView) {
+    viewEl.innerHTML = window.renderView(state, mode, activeView, histSnapshot(), activeNetTag);
+  }
 }
 async function poll() {
-  try { const r = await fetch('/api/state'); if (!r.ok) return; const state = await r.json(); ingest(state); render(state); }
+  try { const r = await fetch('/api/state'); if (!r.ok) return; const state = await r.json(); ingest(state); render(state, true); }
   catch (e) { /* переживём сбой */ }
 }
 // POST-хелпер для действий (Task 13): добавить/выйти/настройки/диагностика — все шлют JSON.
 const postJSON = (path, body) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+// poll() после успешного действия из #view (add/cfg-save/cfg-reset/leave): клик по кнопке-триггеру
+// оставляет фокус на ней (стандартное поведение <button>), а она внутри #view — поэтому Fix 1
+// принял бы её за «пользователь ещё печатает» и заморозил бы перерисовку с результатом действия.
+// Снимаем фокус явно, чтобы результат отобразился сразу, а не после случайного клика мимо.
+function refreshView() { document.activeElement?.blur(); poll(); }
 // ⤢/⤡ и навигация
 document.addEventListener('click', (e) => {
   const act = e.target.closest('[data-act]')?.dataset.act;
@@ -70,61 +83,78 @@ document.addEventListener('click', (e) => {
   const v = e.target.closest('[data-view]')?.dataset.view;
   if (v) { activeView = v; render(lastState); }
 });
+// Летучая подсказка вне #view (body-уровня) — переживает перерисовку #view опросом
+// (в отличие от мутаций текста внутри #view, которые Fix 1 может пропустить/заменить).
+function flashChip(text) {
+  const chip = document.createElement('div');
+  chip.className = 'copytoast';
+  chip.textContent = text;
+  document.body.appendChild(chip);
+  setTimeout(() => chip.remove(), 1500);
+}
 // Копирование IP при клике на адрес в компактном списке
 document.addEventListener('click', (e) => {
   const el = e.target.closest('[data-copy]');
   if (!el) return;
   const ip = el.dataset.copy;
   if (navigator.clipboard) navigator.clipboard.writeText(ip).catch(() => {});
-  const chip = document.createElement('div');
-  chip.className = 'copytoast';
-  chip.textContent = 'IP ' + ip + ' скопирован';
-  document.body.appendChild(chip);
-  setTimeout(() => chip.remove(), 1500);
+  flashChip('IP ' + ip + ' скопирован');
+});
+// Автозаполнение имени сети/пароля из вставленной ссылки-приглашения (делегирование на
+// document, чтобы работать и после перерисовки формы).
+document.addEventListener('input', (e) => {
+  if (e.target.id !== 'f-invite') return;
+  const inv = parseInvite(e.target.value);
+  if (inv.net != null) document.getElementById('f-net').value = inv.net;
+  if (inv.pass != null) document.getElementById('f-pass').value = inv.pass;
 });
 // Действия (Task 13): добавление/выход из сети, приглашение, настройки серверов, диагностика.
 // Отдельный (третий) слушатель click — не трогаем существующие ветки expand/collapse/data-view выше.
 document.addEventListener('click', async (e) => {
   const t = e.target;
   const act = t.closest('[data-act]')?.dataset.act;
-  if (act === 'add-toggle') { const b = t.closest('.addcard').querySelector('.add-body'); b.hidden = !b.hidden; return; }
+  if (act === 'add-toggle') {
+    const b = t.closest('.addcard').querySelector('.add-body');
+    b.hidden = !b.hidden;
+    if (!b.hidden) document.getElementById('f-net')?.focus(); // фокус внутри #view держит форму живой при опросе (Fix 1)
+    return;
+  }
   if (act === 'add') {
-    const net = document.getElementById('f-net').value.trim(), pass = document.getElementById('f-pass').value;
-    const err = document.getElementById('add-err');
-    if (!net || !pass) { err.hidden = false; err.textContent = 'Нужны имя сети и пароль.'; return; }
-    const body = { network: net, password: pass };
+    const fNet = document.getElementById('f-net').value.trim(), fPass = document.getElementById('f-pass').value;
     const inv = parseInvite(document.getElementById('f-invite').value);
+    // Если поля пустые — используем то, что распознали из вставленной ссылки-приглашения.
+    const net = fNet || inv.net || '', pass = fPass || inv.pass || '';
+    if (!net || !pass) { flashChip('Нужны имя сети и пароль'); return; }
+    const body = { network: net, password: pass };
     if ((inv.net || '').trim() === net) { if (inv.sigs.length) body.signals = inv.sigs; if (inv.relay !== null) body.relay = inv.relay; }
     const r = await postJSON('/api/addnetwork', body); const j = await r.json();
-    if (!r.ok) { err.hidden = false; err.textContent = 'Ошибка: ' + (j.error || r.status); } else poll();
+    if (!r.ok) flashChip('Ошибка: ' + (j.error || r.status)); else refreshView();
     return;
   }
   if (act === 'senddiag') {
-    const n = document.getElementById('diag-note'); const j = await (await postJSON('/api/senddiag')).json();
-    n.textContent = j.tag ? ('✓ отправлено, код: ' + j.tag) : ('Ошибка: ' + (j.error || '')); return;
+    const j = await (await postJSON('/api/senddiag')).json();
+    flashChip(j.tag ? 'Диагностика отправлена · код ' + j.tag : 'Ошибка диагностики');
+    return;
   }
   if (act === 'cfg-save') {
     const signals = document.getElementById('s-signals').value.split('\n').map(s => s.trim()).filter(Boolean);
     const relay = document.getElementById('s-relay').value.trim();
-    if (!signals.length) return; await postJSON('/api/settings', { signals, relay }); poll(); return;
+    if (!signals.length) return; await postJSON('/api/settings', { signals, relay }); refreshView(); return;
   }
-  if (act === 'cfg-reset') { await postJSON('/api/settings', { signals: [], relay: '' }); poll(); return; }
+  if (act === 'cfg-reset') { await postJSON('/api/settings', { signals: [], relay: '' }); refreshView(); return; }
   const inviteTag = t.closest('[data-invite]')?.dataset.invite;
   if (inviteTag != null) {
     const j = await (await fetch('/api/invite?tag=' + encodeURIComponent(inviteTag))).json();
     if (j.link) {
       try { await navigator.clipboard.writeText(j.link); } catch (e) {}
-      const orig = t.textContent;
-      t.textContent = '✓ скопировано';
-      setTimeout(() => { t.textContent = orig; }, 1500);
+      flashChip('Ссылка-приглашение скопирована');
     } else {
-      t.textContent = j.note || 'нет ссылки';
-      setTimeout(() => { location.reload && null; }, 0);
+      flashChip(j.note || 'Не удалось получить ссылку');
     }
     return;
   }
   const leaveTag = t.closest('[data-leave]')?.dataset.leave;
-  if (leaveTag != null) { if (confirm('Выйти из этой сети?')) { await postJSON('/api/leavenetwork', { tag: leaveTag }); poll(); } return; }
+  if (leaveTag != null) { if (confirm('Выйти из этой сети?')) { await postJSON('/api/leavenetwork', { tag: leaveTag }); refreshView(); } return; }
 });
 document.addEventListener('change', async (e) => {
   if (e.target.closest('[data-act]')?.dataset.act === 'sendlogs') await postJSON('/api/sendlogs', { enabled: e.target.checked });
