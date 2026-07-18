@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { makeServer } from '../mock-server.mjs';
 
 test('mock отдаёт /api/state и переключает сценарии', async () => {
-  const srv = makeServer().listen(0);
+  const srv = makeServer().listen(0, '127.0.0.1'); // loopback: без запроса брандмауэра
   await new Promise(r => srv.once('listening', r));
   const port = srv.address().port;
   const base = `http://127.0.0.1:${port}`;

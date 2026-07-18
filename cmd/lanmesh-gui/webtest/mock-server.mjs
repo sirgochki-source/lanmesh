@@ -37,5 +37,7 @@ export function makeServer() {
   });
 }
 if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith('mock-server.mjs')) {
-  makeServer().listen(8788, () => console.log('mock: http://127.0.0.1:8788  (меню: /dev)'));
+  // Слушаем строго loopback: dev-инструмент, доступ только с этой машины,
+  // и Windows-брандмауэр не спрашивает про доступ из общих сетей.
+  makeServer().listen(8788, '127.0.0.1', () => console.log('mock: http://127.0.0.1:8788  (меню: /dev)'));
 }
