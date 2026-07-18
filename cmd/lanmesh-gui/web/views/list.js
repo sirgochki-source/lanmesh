@@ -1,7 +1,9 @@
 // Компактный список участников: узкие карточки-строки без аватарок,
 // точка-статус слева, IP и пинг справа (см. docs/superpowers/design-mockups/03-compact-final.html).
 import { dispName, esc } from '../lib/sanitize.js';
-import { fmtRtt, rttClass, fmtUptime } from '../lib/format.js';
+import { fmtRtt, rttClass, fmtUptime, plural } from '../lib/format.js';
+import { quality } from '../lib/quality.js';
+import { sparklineSVG } from '../lib/sparkline.js';   // реально используется с Task 12 (накопление истории)
 
 const pngHtml = (peer) => {
   if (peer.status === 'connecting') return '<span class="png conn">подключение…</span>';
@@ -53,8 +55,67 @@ export function addFormHtml(open) {
     + `<div id="add-err" class="hint" hidden></div></div></div>`;
 }
 
-// Диспетчер видов. Подробный список приходит в Task 11.
-export function renderView(state, mode, view) {
+// Диспетчер видов. history в compact не нужна — только detailed (спарклайн).
+export function renderView(state, mode, view, histories = {}) {
   if (mode === 'compact') return renderCompact(state);
-  return window.renderDetailed ? window.renderDetailed(state, view) : renderCompact(state);
+  return window.renderDetailed ? window.renderDetailed(state, view, histories) : renderCompact(state);
 }
+
+/* ==================== Task 11: подробный режим — Sidebar Dashboard ====================
+   Значения — из docs/superpowers/design-mockups/02-two-modes.html (секция DETAILED). */
+
+const initial = (name) => dispName((name || 'у').trim().charAt(0).toUpperCase());
+// Цвет аватара — детерминированно по хвосту vip, чтобы у одного узла он не «прыгал» между рендерами.
+const avClass = (vip) => 'av' + (['m', 'k', 's', 'd'][(parseInt(vip.replace(/\D/g, '').slice(-2) || '0', 10)) % 4]);
+const barsHtml = (signals) => {
+  const on = (signals || []).filter(Boolean).length, total = Math.max(1, (signals || []).length);
+  return '<span class="bars">' + Array.from({ length: 4 }, (_, i) =>
+    `<i class="${i < Math.round(on / total * 4) ? 'on' : ''}"></i>`).join('') + '</span>';
+};
+
+export function peerRowDetailed(peer, history = []) {
+  const q = quality(peer.status, peer.rttMs ?? -1, history);
+  const badge = peer.status === 'connecting' ? '<span class="badge conn">подключение</span>'
+    : `<span class="badge ${peer.status}">${peer.status}</span>`;
+  const spark = history.length >= 2
+    ? sparklineSVG(history, { w: 120, h: 24, stroke: `var(--q-${q.level})` }) : '<span class="spark-empty"></span>';
+  return `<div class="drow" data-q="${q.level}"><span class="av ${avClass(peer.vip)}">${initial(peer.name)}</span>`
+    + `<span class="who"><span class="nm">${dispName(peer.name || 'узел')}</span>`
+    + `<span class="ip mono copyable" data-copy="${esc(peer.vip)}" title="скопировать IP">${esc(peer.vip)}</span></span>`
+    + `${spark}<span class="grow"></span>`
+    + `${barsHtml(peer.signals)}${badge}${pngHtml(peer)}</div>`;
+}
+
+export function qualityTile(net) {
+  const peers = (net.peers || []).filter(p => p.status !== 'connecting');
+  const direct = peers.filter(p => p.status === 'direct').length;
+  const relay = peers.filter(p => p.status === 'relay').length;
+  const worst = peers.some(p => quality(p.status, p.rttMs, []).level === 'bad') ? 'bad'
+    : relay ? 'ok' : 'good';
+  const label = { good: 'хорошее', ok: 'среднее', bad: 'плохое' }[worst];
+  return `<div class="tile"><div class="k">Качество связи</div>`
+    + `<div class="big q-${worst}">${label}</div><div class="sub">${direct} direct · ${relay} relay</div></div>`;
+}
+
+const soon = (text) => `<div class="dmain"><div class="soon">${text}</div></div>`;
+
+export function renderDetailed(state, view, histories = {}) {
+  const net = (state.networks || [])[0];
+  if (view === 'settings') return soon('⚙ Настройки — скоро (перенос в Task 13).');
+  if (view === 'map') return soon('◎ Карта сети — скоро (Phase 4).');
+  if (view === 'traffic') return soon('▮ Трафик — скоро (Phase 3).');
+  if (!net) return soon('Нет активных сетей. Добавь сеть в компактном режиме.');
+  const peers = (net.peers || []).slice().sort((a, b) => (a.vip < b.vip ? -1 : 1));
+  const rows = peers.map(p => peerRowDetailed(p, histories[p.vip] || [])).join('') || '<div class="empty">Пока никого.</div>';
+  return `<div class="dmain"><div class="dhd"><div><div class="title">${dispName(net.name)}</div>`
+    + `<div class="sub">${peers.length} ${plural(peers.length, 'участник', 'участника', 'участников')}</div></div><span class="grow"></span>`
+    + `<button class="btn-ghost" data-invite="${esc(net.tag)}">⧉ Пригласить</button></div>`
+    + `<div class="tiles">${qualityTile(net)}`
+    + `<div class="tile"><div class="k">Трафик</div><div class="big dim">— <small>Phase 3</small></div></div>`
+    + `<div class="tile"><div class="k">Участников</div><div class="big">${peers.length}</div></div></div>`
+    + `<div class="drows">${rows}</div></div>`;
+}
+// typeof-охрана: list.js импортируется напрямую в node --test (без DOM),
+// а window.renderDetailed нужен только браузеру — присваивание на этапе
+// импорта модуля не должно падать вне браузерного контекста.
+if (typeof window !== 'undefined') window.renderDetailed = renderDetailed;

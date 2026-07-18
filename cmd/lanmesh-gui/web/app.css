@@ -23,6 +23,9 @@
   /* форма */
   --r-card: 14px;  --r-row: 12px;  --r-pill: 999px;
   --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  /* уровни качества связи (Task 11) — переиспользуют уже заданные акценты,
+     чтобы плитка «Качество» и стрелка спарклайна не заводили свою палитру */
+  --q-good: var(--accent-2);  --q-ok: var(--ping-ok);  --q-bad: var(--ping-bad);  --q-connecting: var(--fg-mut);
 }
 
 * { box-sizing: border-box; }
@@ -254,3 +257,73 @@ input:focus { outline: none; border-color: var(--accent); }
   box-shadow: inset 0 1px 0 var(--glass-hi), 0 6px 18px rgba(0,0,0,.28);
   pointer-events: none;
 }
+
+/* ==================== Task 11: подробный режим — Sidebar Dashboard ==================== */
+/* Значения — лифт из docs/superpowers/design-mockups/02-two-modes.html (секция .detailed). */
+
+/* ---------- главная область (заголовок сети + плитки + строки) ---------- */
+.dmain { flex: 1; min-width: 0; padding: 14px 15px; display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+.dhd { display: flex; align-items: center; gap: 10px; }
+.dhd .title { font-size: 16px; font-weight: 700; color: #eaeff5; }
+.dhd .sub { font-size: 11px; color: var(--fg-mut); }
+
+/* ---------- плитки статистики (Трафик / Всего / Качество) ---------- */
+.tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.tile {
+  padding: 11px 12px; border-radius: 12px;
+  background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.08);
+}
+.tile .k { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; color: #6b7686; }
+.tile .big { font-size: 19px; font-weight: 750; margin-top: 3px; font-variant-numeric: tabular-nums; }
+.tile .big small { font-size: 11px; color: var(--fg-mut); font-weight: 600; }
+.tile .big.dim { color: var(--fg-mut); }               /* заглушка «— Phase 3» — не выдаём за реальную цифру */
+.tile .sub { margin-top: 6px; font-size: 10.5px; color: var(--fg-mut); }
+.tile .big.q-good { color: var(--q-good); }
+.tile .big.q-ok   { color: var(--q-ok); }
+.tile .big.q-bad  { color: var(--q-bad); }
+
+/* ---------- строки участников (аватар, спарклайн, бары, бейдж, пинг) ---------- */
+.drows { display: flex; flex-direction: column; gap: 8px; }
+.drow {
+  display: flex; align-items: center; gap: 12px; padding: 11px 13px; border-radius: 13px;
+  background: var(--glass); border: 1px solid var(--glass-border);
+  backdrop-filter: blur(var(--blur)) saturate(1.2); box-shadow: inset 0 1px 0 var(--glass-hi);
+}
+.drow .who { display: flex; flex-direction: column; gap: 1px; width: 120px; min-width: 0; flex: none; }
+.drow .who .nm { font-size: 13px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.drow .who .ip { font-size: 10.5px; color: var(--fg-dim); }
+
+/* ---------- аватар-инициал (градиент по хвосту vip — см. avClass в list.js) ---------- */
+.av {
+  width: 28px; height: 28px; border-radius: 50%; flex: none;
+  display: grid; place-items: center; font-size: 11.5px; font-weight: 700; color: #fff;
+}
+.avm { background: linear-gradient(135deg,#5eead4,#2dd4bf); color: #04231d; }
+.avk { background: linear-gradient(135deg,#7dd3fc,#38bdf8); color: #04222e; }
+.avs { background: linear-gradient(135deg,#c4b5fd,#a78bfa); }
+.avd { background: rgba(255,255,255,.08); color: #9aa2b1; border: 1px solid rgba(255,255,255,.12); }
+
+/* ---------- сигнал-бары (доля отвечающих сигнальных серверов) ---------- */
+.bars { display: inline-flex; gap: 2px; align-items: flex-end; height: 13px; flex: none; }
+.bars i { width: 3px; border-radius: 1px; background: #2a3342; display: block; }
+.bars i.on { background: var(--accent-2); }
+/* высота по эскалации (WiFi-барчики) — в мокапе задан только контейнер (height:13px,
+   align-items:flex-end), сами полоски высоту не получают; добавляем ступени, иначе
+   «включённые» полоски были бы нулевой высоты и невидимы */
+.bars i:nth-child(1) { height: 40%; }
+.bars i:nth-child(2) { height: 60%; }
+.bars i:nth-child(3) { height: 80%; }
+.bars i:nth-child(4) { height: 100%; }
+
+/* ---------- бейдж статуса ---------- */
+.badge { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; flex: none; }
+.badge.direct { background: rgba(55,245,197,.13); color: var(--accent-2); }
+.badge.relay  { background: rgba(106,168,255,.15); color: var(--relay); }
+.badge.conn   { background: rgba(255,207,92,.14); color: var(--ping-ok); }
+
+/* ---------- ping-спарклайн (сама SVG рисуется в Task 12; тут — контейнер и заглушка) ---------- */
+.spark { display: block; flex: none; }
+.spark-empty { display: inline-block; width: 120px; height: 24px; flex: none; }
+
+/* ---------- заглушки видов «скоро» (Карта/Трафик/Настройки) и «нет сетей» ---------- */
+.soon { margin: auto; text-align: center; color: var(--fg-mut); font-size: 13.5px; padding: 40px 20px; }

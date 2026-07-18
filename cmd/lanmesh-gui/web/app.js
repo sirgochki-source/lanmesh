@@ -5,14 +5,16 @@ let mode = localStorage.getItem('lm-mode') || pickMode(innerWidth);
 let manual = localStorage.getItem('lm-mode') != null;
 let activeView = 'list';
 let lastState = { running: false, networks: [] };
+// {vip: number[]} — история пинга для спарклайнов detailed-режима. Пока не наполняется
+// (peerRowDetailed рисует placeholder при <2 точках); накопление из poll() — Task 12.
+let histories = {};
 
 function setMode(m) { mode = m; document.getElementById('root').dataset.mode = m; }
 function render(state) {
   lastState = state;
   document.getElementById('header').innerHTML = renderHeader(state, mode);
   document.getElementById('rail').innerHTML = mode === 'detailed' ? renderRail(state, activeView) : '';
-  // подробный вид (Task 11) подключится через window.renderDetailed внутри renderView
-  if (window.renderView) document.getElementById('view').innerHTML = window.renderView(state, mode, activeView);
+  if (window.renderView) document.getElementById('view').innerHTML = window.renderView(state, mode, activeView, histories);
 }
 async function poll() {
   try { const r = await fetch('/api/state'); if (!r.ok) return; render(await r.json()); }
