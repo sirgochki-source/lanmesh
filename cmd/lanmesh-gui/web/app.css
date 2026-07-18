@@ -1,2 +1,140 @@
-/* Command Glass — токены и компоненты (заполняется в Task 9). */
-body{background:#08090c;color:#e8eaf0;font:14px system-ui;margin:0}
+/* Command Glass — токены и компоненты оболочки (Task 9).
+   Значения — из согласованных макетов docs/superpowers/design-mockups/
+   (02-two-modes.html, 03-compact-final.html) и спеки §4. */
+
+:root {
+  /* поверхности */
+  --bg-page:   #08090c;
+  --bg-panel:  #0a0d12;
+  --glass:        rgba(255,255,255,.06);
+  --glass-border: rgba(255,255,255,.11);
+  --glass-hi:     rgba(255,255,255,.09);   /* inset top highlight */
+  --blur: 16px;                            /* backdrop-filter: blur() saturate(1.2) */
+  /* аврора-свечение (низкая непрозрачность, база остаётся тёмной) */
+  --glow-mint:   rgba(52,229,176,.18);     /* верх-лево  */
+  --glow-violet: rgba(139,92,246,.20);     /* низ-право  */
+  /* акценты */
+  --accent:      #37f5c5;  --accent-2: #46e6c0;  /* direct / бренд (неон-мята) */
+  --relay:       #8fbaff;                        /* relay */
+  --ping-ok:     #ffcf5c;                        /* средний пинг / connecting */
+  --ping-bad:    #ff8080;                        /* высокий пинг */
+  /* текст */
+  --fg:      #e2e7ef;  --fg-mut: #6f7a8a;  --fg-dim: #57616f;
+  /* форма */
+  --r-card: 14px;  --r-row: 12px;  --r-pill: 999px;
+  --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg-page); color: var(--fg);
+  font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.grow { flex: 1; }
+
+/* ---------- оболочка ---------- */
+#root {
+  position: relative; min-height: 100vh; overflow: hidden; isolation: isolate;
+  background: var(--bg-panel);
+}
+#root::before {
+  content: ''; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(70% 45% at 10% -5%, var(--glow-mint), transparent 55%),
+    radial-gradient(70% 50% at 105% 108%, var(--glow-violet), transparent 55%);
+}
+#rail, #main { position: relative; z-index: 1; }
+/* #toasts стоит НЕ включать сюда: #toasts (ID) перебил бы .toasts (класс)
+   и свёл на нет position:fixed из компонентного правила ниже. */
+
+#root[data-mode="compact"] { display: flex; flex-direction: column; }
+#root[data-mode="compact"] #rail { display: none; }
+
+#root[data-mode="detailed"] { display: flex; flex-direction: row; }
+#root[data-mode="detailed"] #rail { display: flex; }
+#root[data-mode="detailed"] #main { flex: 1 1 auto; max-width: 1100px; min-width: 0; }
+
+#main { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+#view { flex: 1; min-height: 0; overflow: auto; }
+
+/* ---------- шапка ---------- */
+.hd { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px; }
+.wm { font-size: 14.5px; font-weight: 750; color: #7a8698; }
+.wm b { color: var(--accent); }
+
+/* ---------- статус-pill ---------- */
+.pill {
+  font-size: 10.5px; font-weight: 650; padding: 3px 9px; border-radius: var(--r-pill);
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.pill .pdot { width: 5px; height: 5px; border-radius: 50%; flex: none; }
+.pill.on {
+  color: #bff5e6; background: rgba(55,245,197,.10); border: 1px solid rgba(55,245,197,.22);
+}
+.pill.on .pdot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.pill.warn {
+  color: #ffe7b0; background: rgba(255,207,92,.12); border: 1px solid rgba(255,207,92,.28);
+}
+.pill.warn .pdot { background: var(--ping-ok); box-shadow: 0 0 6px var(--ping-ok); }
+.pill.off {
+  color: #9aa2b1; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09);
+}
+.pill.off .pdot { background: var(--fg-dim); box-shadow: none; }
+
+/* ---------- кнопки-иконки (⤢/⤡) ---------- */
+button.iconbtn {
+  width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center;
+  font: inherit; font-size: 12px; line-height: 1; cursor: pointer;
+  color: #9aa6b6; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09);
+}
+button.iconbtn:hover { background: rgba(255,255,255,.09); color: var(--fg); }
+button.iconbtn:active { background: rgba(255,255,255,.12); }
+
+/* ---------- рейл (подробный режим) ---------- */
+.rail {
+  width: 194px; flex: 0 0 194px; padding: 12px 11px; border-right: 1px solid rgba(255,255,255,.06);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.rail .brand { font-size: 14px; font-weight: 750; color: #7a8698; padding: 2px 6px 8px; }
+.rail .brand b { color: var(--accent); }
+
+.netitem {
+  display: flex; align-items: center; gap: 8px; padding: 8px 9px; border-radius: 10px;
+  font-size: 12px; color: #c3ccd8; cursor: pointer;
+}
+.netitem:hover { background: rgba(255,255,255,.04); }
+.netitem .pdot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.netitem .cnt { margin-left: auto; font-size: 10.5px; color: var(--fg-mut); }
+
+.nav { margin-top: 12px; display: flex; flex-direction: column; gap: 3px; }
+.nav .n {
+  display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 9px;
+  font-size: 12px; color: #8b95a5; cursor: pointer;
+}
+.nav .n.on { background: rgba(255,255,255,.06); color: var(--fg); border: 1px solid rgba(255,255,255,.08); }
+.nav .n:not(.on):hover { color: var(--fg); }
+
+/* ---------- кнопки-действия (Пригласить / + Сеть, и т.п.) ---------- */
+.btn {
+  flex: 1; text-align: center; font: inherit; font-size: 11.5px; font-weight: 650; padding: 9px;
+  border-radius: 9px; color: #cfd8e4; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09);
+  cursor: pointer;
+}
+.btn:hover { background: rgba(255,255,255,.08); }
+.btn.pri { color: #04231d; border-color: transparent; background: linear-gradient(90deg,#37f5c5,#22d3ee); }
+.btn.pri:hover { filter: brightness(1.06); }
+
+/* ---------- тосты ---------- */
+.toasts {
+  position: fixed; top: 14px; right: 14px; z-index: 10; display: flex; flex-direction: column;
+  gap: 8px; width: 280px; max-width: calc(100vw - 28px); pointer-events: none;
+}
+.toast {
+  pointer-events: auto; padding: 10px 12px; border-radius: var(--r-row); font-size: 12.5px; color: var(--fg);
+  background: var(--glass); border: 1px solid var(--glass-border);
+  backdrop-filter: blur(var(--blur)) saturate(1.2);
+  box-shadow: inset 0 1px 0 var(--glass-hi), 0 6px 18px rgba(0,0,0,.28);
+}
