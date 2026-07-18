@@ -112,7 +112,15 @@ document.addEventListener('click', async (e) => {
   const inviteTag = t.closest('[data-invite]')?.dataset.invite;
   if (inviteTag != null) {
     const j = await (await fetch('/api/invite?tag=' + encodeURIComponent(inviteTag))).json();
-    if (j.link) { await navigator.clipboard.writeText(j.link); t.textContent = '✓ скопировано'; setTimeout(() => t.textContent = '⧉ Пригласить', 1500); }
+    if (j.link) {
+      try { await navigator.clipboard.writeText(j.link); } catch (e) {}
+      const orig = t.textContent;
+      t.textContent = '✓ скопировано';
+      setTimeout(() => { t.textContent = orig; }, 1500);
+    } else {
+      t.textContent = j.note || 'нет ссылки';
+      setTimeout(() => { location.reload && null; }, 0);
+    }
     return;
   }
   const leaveTag = t.closest('[data-leave]')?.dataset.leave;
