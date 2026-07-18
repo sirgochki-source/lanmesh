@@ -4,6 +4,7 @@ const POLL_MS = 1300;
 let mode = localStorage.getItem('lm-mode') || pickMode(innerWidth);
 let manual = localStorage.getItem('lm-mode') != null;
 let activeView = 'list';
+let activeNetTag = null;
 let lastState = { running: false, networks: [] };
 // {vip: number[]} — история пинга для спарклайнов detailed-режима. Пока не наполняется
 // (peerRowDetailed рисует placeholder при <2 точках); накопление из poll() — Task 12.
@@ -13,8 +14,8 @@ function setMode(m) { mode = m; document.getElementById('root').dataset.mode = m
 function render(state) {
   lastState = state;
   document.getElementById('header').innerHTML = renderHeader(state, mode);
-  document.getElementById('rail').innerHTML = mode === 'detailed' ? renderRail(state, activeView) : '';
-  if (window.renderView) document.getElementById('view').innerHTML = window.renderView(state, mode, activeView, histories);
+  document.getElementById('rail').innerHTML = mode === 'detailed' ? renderRail(state, activeView, activeNetTag) : '';
+  if (window.renderView) document.getElementById('view').innerHTML = window.renderView(state, mode, activeView, histories, activeNetTag);
 }
 async function poll() {
   try { const r = await fetch('/api/state'); if (!r.ok) return; render(await r.json()); }
@@ -25,6 +26,11 @@ document.addEventListener('click', (e) => {
   const act = e.target.closest('[data-act]')?.dataset.act;
   if (act === 'expand') { manual = true; localStorage.setItem('lm-mode', 'detailed'); setMode('detailed'); render(lastState); return; }
   if (act === 'collapse') { manual = true; localStorage.setItem('lm-mode', 'compact'); setMode('compact'); render(lastState); return; }
+  // Клик по сети в рейле: выбираем её активной и переключаемся на список
+  // (элемент несёт и data-net, и data-view="list" — обрабатываем здесь и выходим,
+  // чтобы не сработала ещё раз ветка data-view ниже).
+  const netEl = e.target.closest('[data-net]');
+  if (netEl) { activeNetTag = netEl.dataset.net; activeView = 'list'; render(lastState); return; }
   const v = e.target.closest('[data-view]')?.dataset.view;
   if (v) { activeView = v; render(lastState); }
 });

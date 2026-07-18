@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusPill, pickMode, renderHeader } from '../../web/views/shell.js';
+import { statusPill, pickMode, renderHeader, renderRail } from '../../web/views/shell.js';
 
 test('statusPill отражает состояние', () => {
   assert.equal(statusPill({ running: false, networks: [] }).cls, 'off');
@@ -11,7 +11,38 @@ test('pickMode по ширине (порог 620)', () => {
   assert.equal(pickMode(400), 'compact');
   assert.equal(pickMode(900), 'detailed');
 });
-test('renderHeader экранирует и содержит бренд', () => {
+test('renderHeader (compact) содержит вордмарк бренда', () => {
   const h = renderHeader({ running: true, selfEndpoint: 'x', networks: [] }, 'compact');
   assert.match(h, /lan<b>mesh<\/b>/);
+});
+test('renderHeader (detailed) НЕ дублирует вордмарк — рейл его уже показывает', () => {
+  const h = renderHeader({ running: true, selfEndpoint: 'x', networks: [] }, 'detailed');
+  assert.doesNotMatch(h, /class="wm"/);
+  assert.match(h, /data-act="collapse"/);
+  assert.match(h, /class="pill/);
+});
+
+test('renderRail: помечает активную сеть .on и эмитит data-net', () => {
+  const state = { networks: [
+    { tag: 'a', name: 'Alpha', peers: [] },
+    { tag: 'b', name: 'Beta', peers: [] },
+  ] };
+  const html = renderRail(state, 'list', 'b');
+  assert.match(html, /data-net="a"/);
+  assert.match(html, /data-net="b"/);
+  const netitemRe = /<div class="netitem ?(on)?" data-view="list" data-net="([^"]+)">/g;
+  const items = Object.fromEntries([...html.matchAll(netitemRe)].map(m => [m[2], m[1] === 'on']));
+  assert.equal(items.a, false);
+  assert.equal(items.b, true);
+});
+test('renderRail: без совпадения activeNetTag подсвечивает первую сеть', () => {
+  const state = { networks: [
+    { tag: 'a', name: 'Alpha', peers: [] },
+    { tag: 'b', name: 'Beta', peers: [] },
+  ] };
+  const html = renderRail(state, 'list', null);
+  const netitemRe = /<div class="netitem ?(on)?" data-view="list" data-net="([^"]+)">/g;
+  const items = Object.fromEntries([...html.matchAll(netitemRe)].map(m => [m[2], m[1] === 'on']));
+  assert.equal(items.a, true);
+  assert.equal(items.b, false);
 });

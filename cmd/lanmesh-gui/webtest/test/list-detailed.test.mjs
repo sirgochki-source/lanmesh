@@ -29,6 +29,12 @@ test('peerRowDetailed санитизирует враждебное имя', () 
   assert.ok(!s.includes('‮'));
 });
 
+test('peerRowDetailed экранирует peer.status в бейдже (класс и текст, defense-in-depth)', () => {
+  const s = peerRowDetailed({ name: 'X', vip: '1', status: 'direct"><script>1</script>', rttMs: 5 }, []);
+  assert.ok(!s.includes('<script>'));
+  assert.match(s, /badge direct&quot;&gt;&lt;script&gt;1&lt;\/script&gt;/);
+});
+
 test('renderDetailed map/traffic — заглушки «скоро»', () => {
   const st = { running: true, selfEndpoint: 'x', networks: [{ name: 'n', tag: 't', signals: [], peers: [] }] };
   assert.match(renderDetailed(st, 'map', {}), /скоро/i);
@@ -67,4 +73,43 @@ test('renderDetailed list: заголовок сети склоняет «уча
   const st4 = { running: true, selfEndpoint: 'x', networks: [{ name: 'n', tag: 't', signals: [], peers: [p(1), p(2), p(3), p(4)] }] };
   assert.match(renderDetailed(st1, 'list', {}), /1 участник</);
   assert.match(renderDetailed(st4, 'list', {}), /4 участника</);
+});
+
+test('renderDetailed: выбирает сеть по activeNetTag (переключение сетей)', () => {
+  const st = {
+    running: true, selfEndpoint: 'x', networks: [
+      { name: 'Первая', tag: 'net-a', signals: [], peers: [] },
+      { name: 'Вторая', tag: 'net-b', signals: [], peers: [] },
+    ],
+  };
+  const a = renderDetailed(st, 'list', {}, 'net-a');
+  assert.match(a, /Первая/);
+  assert.doesNotMatch(a, /Вторая/);
+  const b = renderDetailed(st, 'list', {}, 'net-b');
+  assert.match(b, /Вторая/);
+  assert.doesNotMatch(b, /Первая/);
+});
+
+test('renderDetailed: activeNetTag без совпадения (или не задан) — берёт первую сеть', () => {
+  const st = {
+    running: true, selfEndpoint: 'x', networks: [
+      { name: 'Первая', tag: 'net-a', signals: [], peers: [] },
+      { name: 'Вторая', tag: 'net-b', signals: [], peers: [] },
+    ],
+  };
+  assert.match(renderDetailed(st, 'list', {}), /Первая/);
+  assert.match(renderDetailed(st, 'list', {}, 'no-such-tag'), /Первая/);
+});
+
+test('renderDetailed: числовая сортировка по vip (9.1 перед 12.9, не лексикографически)', () => {
+  const st = {
+    running: true, selfEndpoint: 'x', networks: [{
+      name: 'n', tag: 't', signals: [], peers: [
+        { name: 'A', vip: '25.44.12.9', status: 'direct', rttMs: 10 },
+        { name: 'B', vip: '25.44.9.1', status: 'direct', rttMs: 10 },
+      ],
+    }],
+  };
+  const s = renderDetailed(st, 'list', {});
+  assert.ok(s.indexOf('25.44.9.1') < s.indexOf('25.44.12.9'), 'ожидали 9.1 раньше 12.9 (числовой порядок)');
 });

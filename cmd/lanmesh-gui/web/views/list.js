@@ -12,6 +12,14 @@ const pngHtml = (peer) => {
 };
 const sdotCls = (s) => s === 'direct' ? 'direct' : s === 'relay' ? 'relay' : 'conn';
 
+// Числовая сортировка по IP: лексикографическое сравнение строк неверно упорядочивает
+// октеты ("25.44.9.1" оказывался бы после "25.44.31.7").
+function cmpVip(a, b) {
+  const pa = a.vip.split('.').map(Number), pb = b.vip.split('.').map(Number);
+  for (let i = 0; i < 4; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0); }
+  return 0;
+}
+
 export function peerRowCompact(peer) {
   return `<div class="row"><span class="sdot ${sdotCls(peer.status)}"></span>`
     + `<span class="nm">${dispName(peer.name || 'узел')}</span><span class="grow"></span>`
@@ -19,7 +27,7 @@ export function peerRowCompact(peer) {
 }
 
 export function netCardCompact(net) {
-  const peers = (net.peers || []).slice().sort((a, b) => (a.vip < b.vip ? -1 : a.vip > b.vip ? 1 : 0));
+  const peers = (net.peers || []).slice().sort(cmpVip);
   const body = peers.length
     ? peers.map(peerRowCompact).join('')
     : `<div class="empty">Пока никого. Позови друга в сеть <b>${dispName(net.name)}</b> с тем же паролем или пришли ссылку кнопкой «Пригласить».</div>`;
@@ -56,9 +64,9 @@ export function addFormHtml(open) {
 }
 
 // Диспетчер видов. history в compact не нужна — только detailed (спарклайн).
-export function renderView(state, mode, view, histories = {}) {
+export function renderView(state, mode, view, histories = {}, activeNetTag) {
   if (mode === 'compact') return renderCompact(state);
-  return window.renderDetailed ? window.renderDetailed(state, view, histories) : renderCompact(state);
+  return window.renderDetailed ? window.renderDetailed(state, view, histories, activeNetTag) : renderCompact(state);
 }
 
 /* ==================== Task 11: подробный режим — Sidebar Dashboard ====================
@@ -76,7 +84,7 @@ const barsHtml = (signals) => {
 export function peerRowDetailed(peer, history = []) {
   const q = quality(peer.status, peer.rttMs ?? -1, history);
   const badge = peer.status === 'connecting' ? '<span class="badge conn">подключение</span>'
-    : `<span class="badge ${peer.status}">${peer.status}</span>`;
+    : `<span class="badge ${esc(peer.status)}">${esc(peer.status)}</span>`;
   const spark = history.length >= 2
     ? sparklineSVG(history, { w: 120, h: 24, stroke: `var(--q-${q.level})` }) : '<span class="spark-empty"></span>';
   return `<div class="drow" data-q="${q.level}"><span class="av ${avClass(peer.vip)}">${initial(peer.name)}</span>`
@@ -99,13 +107,14 @@ export function qualityTile(net) {
 
 const soon = (text) => `<div class="dmain"><div class="soon">${text}</div></div>`;
 
-export function renderDetailed(state, view, histories = {}) {
-  const net = (state.networks || [])[0];
+export function renderDetailed(state, view, histories = {}, activeNetTag) {
+  const nets = state.networks || [];
+  const net = nets.find(n => n.tag === activeNetTag) || nets[0];
   if (view === 'settings') return soon('⚙ Настройки — скоро (перенос в Task 13).');
   if (view === 'map') return soon('◎ Карта сети — скоро (Phase 4).');
   if (view === 'traffic') return soon('▮ Трафик — скоро (Phase 3).');
   if (!net) return soon('Нет активных сетей. Добавь сеть в компактном режиме.');
-  const peers = (net.peers || []).slice().sort((a, b) => (a.vip < b.vip ? -1 : 1));
+  const peers = (net.peers || []).slice().sort(cmpVip);
   const rows = peers.map(p => peerRowDetailed(p, histories[p.vip] || [])).join('') || '<div class="empty">Пока никого.</div>';
   return `<div class="dmain"><div class="dhd"><div><div class="title">${dispName(net.name)}</div>`
     + `<div class="sub">${peers.length} ${plural(peers.length, 'участник', 'участника', 'участников')}</div></div><span class="grow"></span>`

@@ -109,6 +109,7 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
   font-size: 12px; color: #c3ccd8; cursor: pointer;
 }
 .netitem:hover { background: rgba(255,255,255,.04); }
+.netitem.on { background: rgba(55,245,197,.10); border: 1px solid rgba(55,245,197,.22); color: #dbf6ee; }
 .netitem .pdot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .netitem .cnt { margin-left: auto; font-size: 10.5px; color: var(--fg-mut); }
 
@@ -301,7 +302,7 @@ input:focus { outline: none; border-color: var(--accent); }
 .avm { background: linear-gradient(135deg,#5eead4,#2dd4bf); color: #04231d; }
 .avk { background: linear-gradient(135deg,#7dd3fc,#38bdf8); color: #04222e; }
 .avs { background: linear-gradient(135deg,#c4b5fd,#a78bfa); }
-.avd { background: rgba(255,255,255,.08); color: #9aa2b1; border: 1px solid rgba(255,255,255,.12); }
+.avd { background: linear-gradient(135deg,#fcd34d,#f59e0b); color: #422006; }
 
 /* ---------- сигнал-бары (доля отвечающих сигнальных серверов) ---------- */
 .bars { display: inline-flex; gap: 2px; align-items: flex-end; height: 13px; flex: none; }
