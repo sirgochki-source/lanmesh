@@ -34,3 +34,4 @@ Thumbs.db
 
 # design-PDF содержат личные адреса — не коммитим
 docs/*.pdf
+deploy/deno/deno.jsonc
