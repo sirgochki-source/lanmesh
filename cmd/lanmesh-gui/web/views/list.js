@@ -1,0 +1,59 @@
+// Компактный список участников: узкие карточки-строки без аватарок,
+// точка-статус слева, IP и пинг справа (см. docs/superpowers/design-mockups/03-compact-final.html).
+import { dispName, esc } from '../lib/sanitize.js';
+import { fmtRtt, rttClass } from '../lib/format.js';
+
+const pngHtml = (peer) => {
+  if (peer.status === 'connecting') return '<span class="png conn">подключение…</span>';
+  const r = fmtRtt(peer.rttMs ?? -1);
+  return r ? `<span class="png ${rttClass(peer.rttMs)}">${r}</span>` : '';
+};
+const sdotCls = (s) => s === 'direct' ? 'direct' : s === 'relay' ? 'relay' : 'conn';
+
+export function peerRowCompact(peer) {
+  return `<div class="row"><span class="sdot ${sdotCls(peer.status)}"></span>`
+    + `<span class="nm">${dispName(peer.name || 'узел')}</span><span class="grow"></span>`
+    + `<span class="ip mono">${esc(peer.vip)}</span>${pngHtml(peer)}</div>`;
+}
+
+export function netCardCompact(net) {
+  const peers = (net.peers || []).slice().sort((a, b) => (a.vip < b.vip ? -1 : 1));
+  const body = peers.length
+    ? peers.map(peerRowCompact).join('')
+    : `<div class="empty">Пока никого. Позови друга в сеть <b>${dispName(net.name)}</b> с тем же паролем или пришли ссылку кнопкой «Пригласить».</div>`;
+  const dot = net.signalError ? '🟡' : '🟢';
+  return `<div class="netcard"><div class="netcard-hd"><span class="net-name">${dot} ${dispName(net.name)}</span>`
+    + `<span class="cnt">· ${peers.length}</span><span class="grow"></span>`
+    + `<button class="btn-ghost" data-invite="${esc(net.tag)}">⧉ Пригласить</button>`
+    + `<button class="btn-ghost" data-leave="${esc(net.tag)}">Выйти</button></div>`
+    + `<div class="rows">${body}</div></div>`;
+}
+
+export function renderCompact(state) {
+  const nets = state.networks || [];
+  const warn = state.running && !state.selfEndpoint
+    ? '<div class="warnbox"><b>Внешний адрес неизвестен</b> — до тебя не достучатся. '
+      + 'Обычно сеть режет исходящий UDP.</div>' : '';
+  const self = state.running
+    ? `<div class="self"><span><span class="k">твой IP</span><span class="v mono">${esc(state.selfIP || '—')}</span></span>`
+      + `<span><span class="k">внешний</span><span class="v">${state.selfEndpoint ? 'определён' : 'не определён'}</span></span></div>` : '';
+  const cards = nets.map(netCardCompact).join('');
+  return warn + self + cards + addFormHtml(nets.length === 0);
+}
+
+// Форма добавления сети — раскрыта, пока сетей нет (поведение из старого UI).
+export function addFormHtml(open) {
+  return `<div class="netcard addcard"><div class="add-toggle" data-act="add-toggle">＋ Добавить сеть</div>`
+    + `<div class="add-body" ${open ? '' : 'hidden'}>`
+    + `<input id="f-invite" placeholder="lanmesh://join?net=…&pass=…" autocomplete="off">`
+    + `<div class="frow"><input id="f-net" placeholder="имя сети" autocomplete="off">`
+    + `<input id="f-pass" type="password" placeholder="пароль" autocomplete="off"></div>`
+    + `<button class="btn-primary" data-act="add">Добавить сеть</button>`
+    + `<div id="add-err" class="hint" hidden></div></div></div>`;
+}
+
+// Диспетчер видов. Подробный список приходит в Task 11.
+export function renderView(state, mode, view) {
+  if (mode === 'compact') return renderCompact(state);
+  return window.renderDetailed ? window.renderDetailed(state, view) : renderCompact(state);
+}

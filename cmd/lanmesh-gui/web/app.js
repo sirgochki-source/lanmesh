@@ -11,7 +11,7 @@ function render(state) {
   lastState = state;
   document.getElementById('header').innerHTML = renderHeader(state, mode);
   document.getElementById('rail').innerHTML = mode === 'detailed' ? renderRail(state, activeView) : '';
-  // тело вида монтируется в Task 10/11 (renderView)
+  // подробный вид (Task 11) подключится через window.renderDetailed внутри renderView
   if (window.renderView) document.getElementById('view').innerHTML = window.renderView(state, mode, activeView);
 }
 async function poll() {
@@ -32,3 +32,6 @@ new ResizeObserver(() => { if (!manual) setMode(pickMode(innerWidth)); render(la
 setMode(mode);
 poll();
 setInterval(poll, POLL_MS);
+
+import { renderView } from './views/list.js';
+window.renderView = renderView;
