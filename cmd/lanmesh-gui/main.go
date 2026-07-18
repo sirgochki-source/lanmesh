@@ -167,6 +167,7 @@ func main() {
 	mux.HandleFunc("/api/addnetwork", guard(handleAddNetwork))
 	mux.HandleFunc("/api/leavenetwork", guard(handleLeaveNetwork))
 	mux.HandleFunc("/api/disconnect", guard(handleDisconnect))
+	mux.HandleFunc("/api/reconnect", guard(handleReconnect))
 	mux.HandleFunc("/api/sendlogs", guard(handleSendLogs))
 	mux.HandleFunc("/api/senddiag", guard(handleSendDiag))
 	mux.HandleFunc("/api/diagnose", guard(handleDiagnose))
@@ -214,12 +215,16 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 
 	cfgMu.Lock()
 	sendLogs := cfg.sendLogs()
+	savedNetworks := len(cfg.Networks)
 	cfgMu.Unlock()
 
 	out := struct {
 		app.StateView
 		SendLogs bool `json:"sendLogs"`
-	}{StateView: st, SendLogs: sendLogs}
+		// SavedNetworks — сколько сетей в списке (для автоподключения). Нужно панели,
+		// чтобы показать «Подключиться» после «Отключиться» (узел снят, а сети остались).
+		SavedNetworks int `json:"savedNetworks"`
+	}{StateView: st, SendLogs: sendLogs, SavedNetworks: savedNetworks}
 	writeJSON(w, out, http.StatusOK)
 }
 
@@ -441,6 +446,27 @@ func handleDisconnect(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 	sess.Stop()
+}
+
+// handleReconnect поднимает узел заново, присоединяясь ко ВСЕМ сохранённым сетям.
+// Парой к /api/disconnect: снять узел, сменить серверы, поднять обратно, не выходя
+// из сетей. Список сетей не трогаем — берём из конфига как при автозапуске.
+func handleReconnect(w http.ResponseWriter, r *http.Request) {
+	cfgMu.Lock()
+	nets := append([]NetProfile(nil), cfg.Networks...)
+	cfgMu.Unlock()
+
+	var errs []string
+	for _, p := range nets {
+		if err := sess.AddNetwork(p.Name, p.Password); err != nil {
+			errs = append(errs, p.Name+": "+err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		writeJSON(w, map[string]string{"error": strings.Join(errs, "; ")}, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true}, http.StatusOK)
 }
 
 // handleSettings читает и меняет список серверов (сигналки + relay). Менять можно
