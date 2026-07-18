@@ -1,0 +1,36 @@
+# секреты — НИКОГДА не коммитить
+worker/.cf_token
+*.cf_token
+*.token
+.dev.vars
+*.pem
+*.key
+
+# собранные бинарники (пересобираются из исходников)
+*.exe
+*~
+*.zip
+*-arm64
+*-linux-*
+
+# кэш Wrangler (содержит ID аккаунта Cloudflare)
+worker/.wrangler/
+.wrangler/
+
+# сторонняя библиотека — пользователь кладёт свою (у Wintun отдельная лицензия)
+wintun.dll
+
+# идентичность узла (у каждого своя) и локальные данные
+identity
+config.json
+node2/
+*.log
+
+# ОС/редакторы
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# design-PDF содержат личные адреса — не коммитим
+docs/*.pdf

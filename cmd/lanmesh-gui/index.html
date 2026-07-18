@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lanmesh</title>
+<style>
+  :root {
+    --bg: #0f1216; --panel: #171b22; --panel2: #1e232c; --line: #2a313c;
+    --fg: #e6e9ef; --muted: #8b95a5; --accent: #4f8cff; --ok: #35c66b;
+    --warn: #e9b949; --err: #e5484d; --radius: 12px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f4f6fa; --panel:#fff; --panel2:#f0f2f7; --line:#e2e6ee;
+      --fg:#1a1f28; --muted:#69707d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display:flex; align-items:center; gap:12px; margin-bottom:20px; }
+  .logo { font-size:22px; font-weight:700; letter-spacing:-.02em; }
+  .logo span { color:var(--accent); }
+  .pill { margin-left:auto; font-size:13px; font-weight:600; padding:5px 12px;
+    border-radius:999px; display:flex; align-items:center; gap:7px; }
+  .pill.on { background:color-mix(in srgb,var(--ok) 18%,transparent); color:var(--ok); }
+  .pill.warn { background:color-mix(in srgb,var(--warn) 18%,transparent); color:var(--warn); }
+  .pill.off { background:color-mix(in srgb,var(--muted) 18%,transparent); color:var(--muted); }
+  .dot { width:8px; height:8px; border-radius:50%; background:currentColor; }
+  .pill.on .dot { animation: pulse 1.8s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .card { background:var(--panel); border:1px solid var(--line);
+    border-radius:var(--radius); padding:20px; margin-bottom:16px; }
+  .self { display:flex; flex-wrap:wrap; gap:18px 28px; align-items:center; }
+  .kv { display:flex; flex-direction:column; gap:2px; }
+  .kv .k { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+  .kv .v { font-size:16px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .ip { font-family:ui-monospace,Menlo,Consolas,monospace; }
+  label { display:block; font-size:13px; color:var(--muted); margin:0 0 6px; }
+  input[type=text], input[type=password], textarea { width:100%; padding:11px 13px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:9px;
+    color:var(--fg); font-size:15px; }
+  textarea { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; resize:vertical; }
+  input:focus, textarea:focus { outline:none; border-color:var(--accent); }
+  input:disabled, textarea:disabled { opacity:.55; }
+  .row { display:flex; gap:12px; }
+  .row > div { flex:1; }
+  .chk { display:flex; align-items:center; gap:8px; color:var(--muted); font-size:14px; margin:14px 0 4px; }
+  button { font:inherit; font-weight:600; border:none; border-radius:9px;
+    padding:11px 18px; cursor:pointer; transition:filter .15s; }
+  button:hover { filter:brightness(1.08); }
+  button:disabled { opacity:.55; cursor:default; }
+  .btn-primary { background:var(--accent); color:#fff; width:100%; margin-top:14px; }
+  .btn-ghost { background:var(--panel2); color:var(--fg); border:1px solid var(--line); }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em;
+    color:var(--muted); margin:4px 2px 12px; font-weight:600; }
+  .peers { display:flex; flex-direction:column; gap:8px; }
+  .peer { display:flex; align-items:center; gap:14px; background:var(--panel);
+    border:1px solid var(--line); border-radius:var(--radius); padding:13px 16px;
+    transition:opacity .2s ease, transform .2s ease; }
+  .peer.entering, .peer.leaving { opacity:0; transform:translateY(-4px); }
+  .peer .name { font-weight:600; }
+  .peer .meta { font-size:12.5px; color:var(--muted); }
+  .peer .grow { flex:1; min-width:0; }
+  .badge { font-size:12px; font-weight:600; padding:4px 10px; border-radius:999px; white-space:nowrap; }
+  .badge.direct { background:color-mix(in srgb,var(--ok) 16%,transparent); color:var(--ok); }
+  .badge.connecting { background:color-mix(in srgb,var(--warn) 16%,transparent); color:var(--warn); }
+  .badge.relay { background:color-mix(in srgb,var(--accent) 16%,transparent); color:var(--accent); }
+  .rtt { font-size:13px; font-weight:600; font-variant-numeric:tabular-nums;
+    white-space:nowrap; min-width:62px; text-align:right; transition:color .3s ease; }
+  .badge { transition:background .3s ease, color .3s ease; }
+  .rtt-good { color:var(--ok); }
+  .rtt-ok { color:var(--warn); }
+  .rtt-bad { color:var(--err); }
+  .sigdots { display:inline-flex; gap:4px; align-items:center; white-space:nowrap; }
+  .sigdot { width:8px; height:8px; border-radius:50%; box-sizing:border-box;
+    background:var(--line); transition:background .3s ease; }
+  .sigdot.on { background:var(--ok); }         /* сигналка жива и видит пира */
+  .sigdot.off { background:var(--line); }       /* сигналка жива, но пира там нет */
+  .sigdot.down { background:transparent; border:1.5px solid var(--err); } /* сигналка недоступна нам */
+  .copy { background:none; border:none; color:var(--muted); cursor:pointer; padding:4px; font-size:13px; }
+  .copy:hover { color:var(--accent); }
+  .empty { text-align:center; color:var(--muted); padding:32px 16px; }
+  .err { background:color-mix(in srgb,var(--err) 14%,transparent); color:var(--err);
+    border:1px solid color-mix(in srgb,var(--err) 30%,transparent);
+    border-radius:9px; padding:10px 13px; font-size:13.5px; margin-bottom:14px; }
+  .warnbox { background:color-mix(in srgb,var(--warn) 12%,transparent); color:var(--warn);
+    border:1px solid color-mix(in srgb,var(--warn) 28%,transparent);
+    border-radius:9px; padding:10px 13px; font-size:13.5px; margin-bottom:14px; }
+  .warnbox b { color:var(--fg); }
+  .warnbox p { margin:0 0 6px; }
+  .warnbox p:last-child { margin-bottom:0; }
+  .hint { color:var(--muted); font-size:12.5px; margin:6px 0 0 26px; }
+  .foot { text-align:center; color:var(--muted); font-size:12px; margin-top:24px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">lan<span>mesh</span></div>
+    <div id="pill" class="pill off"><span class="dot"></span><span id="pillText">не подключено</span></div>
+  </header>
+
+  <div id="err" class="err" style="display:none"></div>
+  <div id="warn" class="warnbox" style="display:none"></div>
+
+  <!-- Узел (поднят, когда есть хоть одна сеть) -->
+  <div id="selfCard" class="card" style="display:none">
+    <div class="self">
+      <div class="kv"><span class="k">это я</span><span id="sName" class="v">—</span></div>
+      <div class="kv"><span class="k">мой IP</span><span id="sIP" class="v ip">—</span></div>
+      <div class="kv"><span class="k">внешний адрес</span><span id="sExt" class="v ip">—</span></div>
+      <div class="kv"><span class="k">в сети</span><span id="sUp" class="v">—</span></div>
+    </div>
+  </div>
+
+  <!-- Карточки сетей (рендерятся из state.networks) -->
+  <div id="networks"></div>
+
+  <!-- Добавить сеть -->
+  <div id="addCard" class="card">
+    <h2 style="margin:0 0 12px">Добавить сеть</h2>
+    <div style="margin-bottom:14px">
+      <label>приглашение <span style="opacity:.7">— вставь ссылку от друга, поля заполнятся сами</span></label>
+      <input id="invite" type="text" placeholder="lanmesh://join?net=…&amp;pass=…" autocomplete="off">
+    </div>
+    <div class="row">
+      <div>
+        <label>имя сети</label>
+        <input id="network" type="text" placeholder="myteam" autocomplete="off">
+      </div>
+      <div>
+        <label>пароль</label>
+        <input id="password" type="password" placeholder="общий секрет" autocomplete="off">
+      </div>
+    </div>
+    <button id="addBtn" class="btn-primary">Добавить сеть</button>
+    <div id="addErr" class="hint" style="margin-left:0; color:var(--err); display:none"></div>
+    <div class="hint" style="margin-left:0">Можно состоять в нескольких сетях сразу — они все активны. Сеть = имя+пароль, регистр важен.</div>
+  </div>
+
+  <div class="card" style="padding:14px 20px">
+    <label class="chk" style="margin:0">
+      <input id="sendLogs" type="checkbox">
+      отправлять диагностику на сигналку
+    </label>
+    <div class="hint">Логи этого клиента (без паролей) уходят на сервер сети и живут там час —
+      чтобы разбирать проблемы с подключением, не пересылая файлы вручную.
+      Их видит тот, кто знает имя и пароль сети.</div>
+  </div>
+
+  <div class="card" id="diagCard" style="display:none; padding:14px 20px">
+    <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+      <button id="diagSend" class="btn-ghost">📤 Отправить диагностику</button>
+      <span id="diagNote" class="hint" style="margin:0">Не строится соединение? Нажми — отправит нам данные для разбора.</span>
+    </div>
+  </div>
+
+  <div class="card" id="settingsCard" style="padding:14px 20px">
+    <div class="chk" id="settingsToggle" style="margin:0; cursor:pointer; user-select:none">
+      <span id="settingsCaret">▸</span> Серверы
+      <span id="settingsHint" style="margin-left:auto; font-size:12px">по умолчанию</span>
+    </div>
+    <div id="settingsBody" style="display:none; margin-top:14px">
+      <label>сигналки (по одной ссылке на строку)</label>
+      <textarea id="cfgSignals" rows="3" placeholder="https://…"></textarea>
+      <label style="margin-top:12px">ретранслятор (relay), host:port</label>
+      <input id="cfgRelay" type="text" placeholder="host:port" autocomplete="off">
+      <div class="row" style="margin-top:14px">
+        <button id="cfgSave" class="btn-primary" style="margin:0">Сохранить</button>
+        <button id="cfgReset" class="btn-ghost">Сбросить к стандартным</button>
+      </div>
+      <div class="hint" id="cfgNote" style="margin-left:0">Пустые поля = стандартные сервера. Менять можно только когда сеть отключена.</div>
+    </div>
+  </div>
+
+  <div class="foot">панель обновляется автоматически · <span id="host"></span></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let busy = false;
+
+function fmtUptime(sec) {
+  if (sec < 60) return sec + " с";
+  const m = Math.floor(sec/60), h = Math.floor(m/60);
+  if (h > 0) return h + " ч " + (m%60) + " м";
+  return m + " м " + (sec%60) + " с";
+}
+function fmtSeen(ms) {
+  if (ms < 0) return "нет пакетов";
+  if (ms < 2000) return "только что";
+  return Math.round(ms/1000) + " с назад";
+}
+// Задержка: доли миллисекунды осмысленны только в локалке, дальше округляем.
+function fmtRtt(ms) {
+  if (ms < 0) return null;
+  if (ms < 10) return ms.toFixed(1) + " мс";
+  return Math.round(ms) + " мс";
+}
+// Порог по ощущениям от игры, а не по красоте цифр.
+function rttClass(ms) {
+  if (ms < 60) return "rtt-good";
+  if (ms < 150) return "rtt-ok";
+  return "rtt-bad";
+}
+
+function render(st) {
+  const on = st.running;
+  const nets = st.networks || [];
+  const noExt = on && !st.selfEndpoint;          // узел без внешнего адреса — не пробьют
+  const anyBad = on && nets.some(n => n.signalError);
+  const degraded = noExt || anyBad;
+
+  $("#pill").className = "pill " + (!on ? "off" : (degraded ? "warn" : "on"));
+  $("#pillText").textContent = !on ? "не подключено"
+    : (degraded ? "ограничено" : (nets.length + " " + plural(nets.length, "сеть", "сети", "сетей")));
+
+  $("#err").style.display = st.error ? "block" : "none";
+  $("#err").textContent = st.error ? ("Ошибка: " + st.error) : "";
+
+  $("#warn").style.display = noExt ? "block" : "none";
+  $("#warn").innerHTML = noExt
+    ? "<p><b>Внешний адрес неизвестен</b> — ни один STUN-сервер не ответил. Другие участники не смогут до тебя достучаться. Обычно это значит, что сеть режет исходящий UDP.</p>"
+    : "";
+
+  $("#selfCard").style.display = on ? "block" : "none";
+  $("#diagCard").style.display = on ? "block" : "none";
+  setSettingsEditable(!on); // серверы правим только когда узел снят (нет сетей)
+
+  if (on) {
+    $("#sName").textContent = st.selfName || "—";
+    $("#sIP").textContent = st.selfIP || "—";
+    $("#sExt").textContent = st.selfEndpoint || "не определён";
+    $("#sExt").title = st.stunVia ? ("определён через " + st.stunVia) : "";
+    $("#sUp").textContent = fmtUptime(st.uptimeSec || 0);
+  }
+  renderNetworks(nets);
+}
+
+// plural — русское склонение существительного при числе n.
+function plural(n, one, few, many) {
+  const d = n % 10, dd = n % 100;
+  if (d === 1 && dd !== 11) return one;
+  if (d >= 2 && d <= 4 && (dd < 12 || dd > 14)) return few;
+  return many;
+}
+
+// Карточки сетей рисуем строкой и перерисовываем ТОЛЬКО при изменении данных —
+// иначе innerHTML стирал бы «✓» на кнопках и дёргал список каждый опрос.
+let lastNetsJSON = "";
+function renderNetworks(nets) {
+  const j = JSON.stringify(nets);
+  if (j === lastNetsJSON) return;
+  lastNetsJSON = j;
+  $("#networks").innerHTML = nets.map(netCardHTML).join("");
+}
+
+function netCardHTML(n) {
+  const peers = (n.peers || []).slice().sort((a, b) => a.vip < b.vip ? -1 : a.vip > b.vip ? 1 : 0);
+  const dot = n.signalError ? "🟡" : "🟢";
+  const body = peers.length ? peers.map(p => peerRowHTML(p, n.signals)).join("") : emptyNetHTML(n);
+  return '<div class="card">' +
+    '<div class="self">' +
+      '<div class="kv"><span class="k">сеть</span><span class="v">' + dot + ' ' + esc(n.name) + '</span></div>' +
+      '<div class="kv"><span class="k">сигналки</span><span class="sigdots" style="margin-top:5px">' + dotsHTML(n.signals, null) + '</span></div>' +
+      '<button class="btn-ghost" style="margin-left:auto" data-invite="' + esc(n.tag) + '" title="скопировать ссылку-приглашение">⧉ Пригласить</button>' +
+      '<button class="btn-ghost" data-leave="' + esc(n.tag) + '" title="выйти из этой сети">Выйти</button>' +
+    '</div>' +
+    '<h2 style="margin:14px 0 8px">участники · ' + peers.length + '</h2>' +
+    '<div class="peers">' + body + '</div>' +
+  '</div>';
+}
+
+function emptyNetHTML(n) {
+  return '<div class="empty">Пока никого. Позови друга в сеть <b>' + esc(n.name) +
+    '</b> с тем же паролем (регистр важен) или пришли ссылку кнопкой «Пригласить».</div>';
+}
+
+// Точки доступности сигналок строкой. sigMeta=[{host,up}]; presence — виден ли пир
+// на i-й сигналке (null для собственной строки сети).
+function dotsHTML(sigMeta, presence) {
+  sigMeta = sigMeta || [];
+  return sigMeta.map((s, i) => {
+    let cls = "sigdot", tip;
+    if (!s.up) { cls += " down"; tip = s.host + " — недоступна тебе"; }
+    else if (presence) {
+      if (presence[i]) { cls += " on"; tip = s.host + " — участник виден здесь"; }
+      else { cls += " off"; tip = s.host + " — жива, но участника тут нет"; }
+    } else { cls += " on"; tip = s.host + " — доступна"; }
+    return '<span class="' + cls + '" title="' + esc(tip) + '"></span>';
+  }).join("");
+}
+
+function peerRowHTML(p, sigs) {
+  const rtt = fmtRtt(p.rttMs === undefined ? -1 : p.rttMs);
+  const rttHTML = rtt ? '<span class="rtt ' + rttClass(p.rttMs) + '">' + rtt + '</span>' : "";
+  const badge = p.status === "direct" ? ["badge direct", "🟢 прямое", ""]
+    : p.status === "relay" ? ["badge relay", "🔵 ретранслятор", "прямое соединение не пробилось — идём через ретранслятор"]
+    : ["badge connecting", "🟡 подключение…", ""];
+  return '<div class="peer">' +
+    '<div class="grow"><div class="name">' + esc(p.name || "узел") + '</div>' +
+      '<div class="meta"><span class="ip">' + esc(p.vip) + '</span><span class="seen"> · ' + esc(fmtSeen(p.lastSeenMs)) + '</span></div></div>' +
+    '<span class="sigdots" title="через какие сигналки виден участник">' + dotsHTML(sigs, p.signals) + '</span>' +
+    rttHTML +
+    '<button class="copy" data-ip="' + esc(p.vip) + '" title="скопировать IP">⧉ IP</button>' +
+    '<span class="' + badge[0] + '" title="' + esc(badge[2]) + '">' + badge[1] + '</span>' +
+  '</div>';
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+
+async function poll() {
+  try {
+    const st = await (await fetch("/api/state")).json();
+    render(st);
+    if (st.sendLogs !== undefined && document.activeElement !== $("#sendLogs")) {
+      $("#sendLogs").checked = st.sendLogs;
+    }
+  } catch(e) { /* панель переживёт кратковременный сбой */ }
+}
+
+// Добавить сеть (имя+пароль или вставленный инвайт). Мультисеть: добавляется к
+// уже подключённым, а не заменяет их.
+$("#addBtn").onclick = async () => {
+  const name = $("#network").value.trim(), pass = $("#password").value;
+  const err = $("#addErr");
+  err.style.display = "none";
+  if (!name || !pass) { err.textContent = "Нужны имя сети и пароль."; err.style.display = "block"; return; }
+  const btn = $("#addBtn"); btn.disabled = true; btn.textContent = "Добавляю…";
+  try {
+    const r = await fetch("/api/addnetwork", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ network:name, password:pass }) });
+    const j = await r.json();
+    if (!r.ok) { err.textContent = "Ошибка: " + (j.error||r.status); err.style.display = "block"; }
+    else { $("#network").value=""; $("#password").value=""; $("#invite").value=""; }
+  } catch(e) { err.textContent = "Ошибка: " + e.message; err.style.display = "block"; }
+  btn.disabled = false; btn.textContent = "Добавить сеть"; poll();
+};
+
+// Клики по карточкам сетей (делегирование — карточки перерисовываются строкой):
+// копирование IP, приглашение, выход из сети.
+$("#networks").addEventListener("click", async (e) => {
+  const cp = e.target.closest(".copy");
+  if (cp) {
+    navigator.clipboard.writeText(cp.dataset.ip || "");
+    cp.textContent = "✓";
+    setTimeout(() => { cp.textContent = "⧉ IP"; }, 900);
+    return;
+  }
+  const inv = e.target.closest("[data-invite]");
+  if (inv) {
+    const t = inv.textContent;
+    try {
+      const j = await (await fetch("/api/invite?tag=" + encodeURIComponent(inv.dataset.invite))).json();
+      if (j.link) { await navigator.clipboard.writeText(j.link); inv.textContent = "✓ скопировано"; }
+      else inv.textContent = j.note || "нечего копировать";
+    } catch(err) { inv.textContent = "ошибка"; }
+    setTimeout(() => { inv.textContent = t; }, 1800);
+    return;
+  }
+  const lv = e.target.closest("[data-leave]");
+  if (lv) {
+    if (confirm("Выйти из этой сети?")) {
+      await fetch("/api/leavenetwork", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ tag: lv.dataset.leave }) });
+      poll();
+    }
+    return;
+  }
+});
+$("#sendLogs").onchange = async () => {
+  await fetch("/api/sendlogs", { method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({ enabled: $("#sendLogs").checked }) });
+};
+
+// --- диагностика соединения ------------------------------------------------
+// Отчёт клиенту НЕ показываем (техника NAT/VPN/пиров — для нас, уходит в снимок,
+// который читаем через /logs). В панели только кнопка отправки.
+$("#diagSend").onclick = async () => {
+  const btn = $("#diagSend"), note = $("#diagNote");
+  btn.disabled = true; btn.textContent = "Отправляю…"; note.textContent = "";
+  try {
+    const r = await fetch("/api/senddiag", { method:"POST" });
+    const j = await r.json();
+    if (r.ok) {
+      note.style.color = "var(--ok)";
+      note.innerHTML = "✓ отправлено. Код для чтения: <b style=\"font-family:monospace\">" + esc(j.tag||"") + "</b>";
+    } else {
+      note.style.color = "var(--err)";
+      note.textContent = "Ошибка: " + (j.error || r.status);
+    }
+  } catch(e) {
+    note.style.color = "var(--err)";
+    note.textContent = "Ошибка: " + e.message;
+  }
+  btn.disabled = false; btn.textContent = "📤 Отправить диагностику";
+};
+
+// --- приглашения -----------------------------------------------------------
+// Ссылка вида lanmesh://join?net=…&pass=… — воспринимаем как текст: другу не
+// нужно вбивать имя+пароль руками, а нам — регистрировать URL-протокол (каждый
+// клик плодил бы новый elevated-инстанс с UAC).
+function parseInvite(text) {
+  text = (text || "").trim();
+  let net = null, pass = null;
+  const m = text.match(/[?&]net=([^&]*)/); if (m) net = decodeURIComponent(m[1]);
+  const p = text.match(/[?&]pass=([^&]*)/); if (p) pass = decodeURIComponent(p[1]);
+  return { net, pass };
+}
+$("#invite").addEventListener("input", () => {
+  const { net, pass } = parseInvite($("#invite").value);
+  if (net !== null) $("#network").value = net;
+  if (pass !== null) $("#password").value = pass;
+});
+
+// --- настройки серверов ----------------------------------------------------
+const defaultCfgNote = "Пустые поля = стандартные сервера. Менять можно только когда сеть отключена.";
+let settingsLoaded = false;
+
+function setSettingsEditable(ok) {
+  ["#cfgSignals","#cfgRelay","#cfgSave","#cfgReset"].forEach(s => $(s).disabled = !ok);
+  const note = $("#cfgNote");
+  if (!ok) { note.textContent = "Сеть подключена — отключись, чтобы менять серверы."; note.dataset.locked = "1"; }
+  else if (note.dataset.locked) { note.textContent = defaultCfgNote; note.dataset.locked = ""; }
+}
+
+async function loadSettings() {
+  try {
+    const s = await (await fetch("/api/settings")).json();
+    $("#cfgSignals").value = (s.signals || []).join("\n");
+    $("#cfgRelay").value = s.relay || "";
+    $("#settingsHint").textContent = s.custom ? "своё" : "по умолчанию";
+    settingsLoaded = true;
+  } catch(e) { /* оставим поля как есть */ }
+}
+
+$("#settingsToggle").onclick = () => {
+  const body = $("#settingsBody");
+  const open = body.style.display === "none";
+  body.style.display = open ? "block" : "none";
+  $("#settingsCaret").textContent = open ? "▾" : "▸";
+  if (open && !settingsLoaded) loadSettings();
+};
+
+$("#cfgSave").onclick = async () => {
+  const signals = $("#cfgSignals").value.split("\n").map(s => s.trim()).filter(Boolean);
+  const relay = $("#cfgRelay").value.trim();
+  const note = $("#cfgNote");
+  try {
+    const r = await fetch("/api/settings", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ signals, relay }) });
+    const j = await r.json();
+    if (r.ok) { note.textContent = "Сохранено."; settingsLoaded = false; loadSettings(); }
+    else note.textContent = "Ошибка: " + (j.error || r.status);
+  } catch(e) { note.textContent = "Ошибка: " + e.message; }
+};
+
+$("#cfgReset").onclick = async () => {
+  const note = $("#cfgNote");
+  try {
+    await fetch("/api/settings", { method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ signals: [], relay: "" }) });
+    settingsLoaded = false; await loadSettings();
+    note.textContent = "Сброшено к стандартным.";
+  } catch(e) { note.textContent = "Ошибка: " + e.message; }
+};
+
+$("#host").textContent = location.host;
+poll();
+setInterval(poll, 1500);
+</script>
+</body>
+</html>

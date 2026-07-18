@@ -1,0 +1,21 @@
+# Конфиг деплоя сигналки lanmesh через wrangler.
+# URL после деплоя: https://lanmesh-signal.<твой-субдомен>.workers.dev
+name = "lanmesh-signal"
+main = "signal-worker.js"
+compatibility_date = "2026-07-01"
+
+# Состояние сети (кто в сети + логи) живёт в Durable Object, по одному объекту
+# на сеть. KV тут был раньше и не подошёл: на бесплатном тарифе всего 1000
+# записей в сутки, а регистрация раз в 20с даёт ~4300 на КАЖДЫЙ узел —
+# упирались за вечер, и сигналка начинала отдавать 500.
+[[durable_objects.bindings]]
+name = "MESH"
+class_name = "MeshRegistry"
+
+# new_sqlite_classes — вариант DO, доступный на бесплатном тарифе.
+# Память — рабочий путь, storage — только чтобы пережить выгрузку объекта по
+# простою (иначе после неё клиент получал ПУСТОЙ список и рвал живую связь).
+# Лимиты storage у DO — свои, не KV'шные: ~100k записей в сутки, влезаем.
+[[migrations]]
+tag = "v2-do"
+new_sqlite_classes = ["MeshRegistry"]
