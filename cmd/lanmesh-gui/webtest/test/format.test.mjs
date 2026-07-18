@@ -21,3 +21,15 @@ test('plural (русское склонение)', () => {
   assert.equal(plural(3, 'сеть', 'сети', 'сетей'), 'сети');
   assert.equal(plural(5, 'сеть', 'сети', 'сетей'), 'сетей');
 });
+test('plural (русское склонение) — trap range 11-14 и 21', () => {
+  assert.equal(plural(11, 'сеть', 'сети', 'сетей'), 'сетей');
+  assert.equal(plural(12, 'сеть', 'сети', 'сетей'), 'сетей');
+  assert.equal(plural(14, 'сеть', 'сети', 'сетей'), 'сетей');
+  assert.equal(plural(21, 'сеть', 'сети', 'сетей'), 'сеть');
+  assert.equal(plural(22, 'сеть', 'сети', 'сетей'), 'сети');
+});
+test('fmtSeen', () => {
+  assert.equal(fmtSeen(-1), 'нет пакетов');
+  assert.equal(fmtSeen(1000), 'только что');
+  assert.equal(fmtSeen(5000), '5 с назад');
+});
