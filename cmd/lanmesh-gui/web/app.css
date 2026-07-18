@@ -334,5 +334,35 @@ input:focus { outline: none; border-color: var(--accent); }
 .spark { display: block; flex: none; }
 .spark-empty { display: inline-block; width: 120px; height: 24px; flex: none; }
 
-/* ---------- заглушки видов «скоро» (Карта/Трафик/Настройки) и «нет сетей» ---------- */
+/* ---------- заглушки видов «скоро» (Карта/Трафик) и «нет сетей» ---------- */
 .soon { margin: auto; text-align: center; color: var(--fg-mut); font-size: 13.5px; padding: 40px 20px; }
+
+/* ==================== Task 13: настройки — сервера и диагностика ==================== */
+/* renderSettings() кладёт поля плоскими соседями внутри .dmain — интервал между ними
+   даёт flex-gap самого .dmain (см. правило .dmain выше), поэтому здесь везде margin: 0,
+   а не переопределение отступов у каждого поля по отдельности. */
+.dmain h2.soon-h {
+  margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--fg-mut);
+}
+.dmain label { display: block; margin: 0; font-size: 11.5px; color: var(--fg-mut); }
+.dmain > input, .dmain > textarea { margin: 0; }
+textarea {
+  width: 100%; padding: 9px 11px; font: inherit; font-size: 13px; line-height: 1.4;
+  color: var(--fg); background: rgba(255,255,255,.04); border: 1px solid var(--glass-border);
+  border-radius: 8px; resize: vertical; font-family: var(--mono);
+}
+textarea::placeholder { color: var(--fg-dim); }
+textarea:focus { outline: none; border-color: var(--accent); }
+input:disabled, textarea:disabled, button:disabled {
+  opacity: .45; cursor: not-allowed;
+}
+/* кнопки Сохранить/Сбросить в ряд — .frow обычно распределяет инпуты, .btn-primary
+   сам метит width:100%, что в паре с flex сломало бы ряд; здесь сбрасываем оба на flex:1 */
+.frow > button { flex: 1; width: auto; margin-top: 0; }
+/* label.chk (не просто .chk): специфичность должна перебить ".dmain label { display:block }"
+   выше — иначе чекбокс-строка сплющится обратно в block и потеряет свой флекс-ряд */
+.dmain label.chk, label.chk {
+  display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12.5px; color: var(--fg); cursor: pointer;
+}
+.chk input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent); }

@@ -3,6 +3,7 @@ import { RttHistory } from './lib/rtt-history.js';
 import { diffPeers } from './lib/peerdiff.js';
 import { collectPeers } from './lib/collect.js';
 import { dispName } from './lib/sanitize.js';
+import { parseInvite } from './lib/invite.js';
 
 const POLL_MS = 1300;
 let mode = localStorage.getItem('lm-mode') || pickMode(innerWidth);
@@ -54,6 +55,8 @@ async function poll() {
   try { const r = await fetch('/api/state'); if (!r.ok) return; const state = await r.json(); ingest(state); render(state); }
   catch (e) { /* переживём сбой */ }
 }
+// POST-хелпер для действий (Task 13): добавить/выйти/настройки/диагностика — все шлют JSON.
+const postJSON = (path, body) => fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 // ⤢/⤡ и навигация
 document.addEventListener('click', (e) => {
   const act = e.target.closest('[data-act]')?.dataset.act;
@@ -78,6 +81,45 @@ document.addEventListener('click', (e) => {
   chip.textContent = 'IP ' + ip + ' скопирован';
   document.body.appendChild(chip);
   setTimeout(() => chip.remove(), 1500);
+});
+// Действия (Task 13): добавление/выход из сети, приглашение, настройки серверов, диагностика.
+// Отдельный (третий) слушатель click — не трогаем существующие ветки expand/collapse/data-view выше.
+document.addEventListener('click', async (e) => {
+  const t = e.target;
+  const act = t.closest('[data-act]')?.dataset.act;
+  if (act === 'add-toggle') { const b = t.closest('.addcard').querySelector('.add-body'); b.hidden = !b.hidden; return; }
+  if (act === 'add') {
+    const net = document.getElementById('f-net').value.trim(), pass = document.getElementById('f-pass').value;
+    const err = document.getElementById('add-err');
+    if (!net || !pass) { err.hidden = false; err.textContent = 'Нужны имя сети и пароль.'; return; }
+    const body = { network: net, password: pass };
+    const inv = parseInvite(document.getElementById('f-invite').value);
+    if ((inv.net || '').trim() === net) { if (inv.sigs.length) body.signals = inv.sigs; if (inv.relay !== null) body.relay = inv.relay; }
+    const r = await postJSON('/api/addnetwork', body); const j = await r.json();
+    if (!r.ok) { err.hidden = false; err.textContent = 'Ошибка: ' + (j.error || r.status); } else poll();
+    return;
+  }
+  if (act === 'senddiag') {
+    const n = document.getElementById('diag-note'); const j = await (await postJSON('/api/senddiag')).json();
+    n.textContent = j.tag ? ('✓ отправлено, код: ' + j.tag) : ('Ошибка: ' + (j.error || '')); return;
+  }
+  if (act === 'cfg-save') {
+    const signals = document.getElementById('s-signals').value.split('\n').map(s => s.trim()).filter(Boolean);
+    const relay = document.getElementById('s-relay').value.trim();
+    if (!signals.length) return; await postJSON('/api/settings', { signals, relay }); poll(); return;
+  }
+  if (act === 'cfg-reset') { await postJSON('/api/settings', { signals: [], relay: '' }); poll(); return; }
+  const inviteTag = t.closest('[data-invite]')?.dataset.invite;
+  if (inviteTag != null) {
+    const j = await (await fetch('/api/invite?tag=' + encodeURIComponent(inviteTag))).json();
+    if (j.link) { await navigator.clipboard.writeText(j.link); t.textContent = '✓ скопировано'; setTimeout(() => t.textContent = '⧉ Пригласить', 1500); }
+    return;
+  }
+  const leaveTag = t.closest('[data-leave]')?.dataset.leave;
+  if (leaveTag != null) { if (confirm('Выйти из этой сети?')) { await postJSON('/api/leavenetwork', { tag: leaveTag }); poll(); } return; }
+});
+document.addEventListener('change', async (e) => {
+  if (e.target.closest('[data-act]')?.dataset.act === 'sendlogs') await postJSON('/api/sendlogs', { enabled: e.target.checked });
 });
 // Отзывчивость: если пользователь не выбирал режим руками — следуем ширине окна.
 new ResizeObserver(() => { if (!manual) setMode(pickMode(innerWidth)); render(lastState); }).observe(document.documentElement);

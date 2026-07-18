@@ -4,6 +4,7 @@ import { dispName, esc } from '../lib/sanitize.js';
 import { fmtRtt, rttClass, fmtUptime, plural } from '../lib/format.js';
 import { quality } from '../lib/quality.js';
 import { sparklineSVG } from '../lib/sparkline.js';   // реально используется с Task 12 (накопление истории)
+import { renderSettings } from './settings.js';
 
 const pngHtml = (peer) => {
   if (peer.status === 'connecting') return '<span class="png conn">подключение…</span>';
@@ -110,7 +111,7 @@ const soon = (text) => `<div class="dmain"><div class="soon">${text}</div></div>
 export function renderDetailed(state, view, histories = {}, activeNetTag) {
   const nets = state.networks || [];
   const net = nets.find(n => n.tag === activeNetTag) || nets[0];
-  if (view === 'settings') return soon('⚙ Настройки — скоро (перенос в Task 13).');
+  if (view === 'settings') return renderSettings(state);
   if (view === 'map') return soon('◎ Карта сети — скоро (Phase 4).');
   if (view === 'traffic') return soon('▮ Трафик — скоро (Phase 3).');
   if (!net) return soon('Нет активных сетей. Добавь сеть в компактном режиме.');

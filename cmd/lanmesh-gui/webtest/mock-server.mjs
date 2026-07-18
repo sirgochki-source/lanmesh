@@ -29,7 +29,11 @@ export function makeServer() {
     if (p === '/api/diagnose') return json(res, { natType: 'full-cone', vpn: false, egressUDP: true });
     if (p === '/api/settings') return json(res, { custom: false, signalCount: 2, hasRelay: true });
     if (p === '/api/invite') return json(res, { link: 'lanmesh://join?net=myteam&pass=secret&sig=https://s1&relay=r:1' });
-    if (req.method === 'POST') return json(res, { ok: true }); // addnetwork/leave/disconnect/sendlogs/senddiag/settings
+    // Отдельно от общего POST-заглушечника ниже: renderSettings() (Task 13) показывает код
+    // диагностики только если ответ несёт tag — без него кнопка «Отправить диагностику»
+    // в харнессе всегда выглядела бы как ошибка.
+    if (p === '/api/senddiag' && req.method === 'POST') return json(res, { ok: true, tag: 'DEV12345' });
+    if (req.method === 'POST') return json(res, { ok: true }); // addnetwork/leave/disconnect/sendlogs/settings
     // статика
     let rel = normalize(p === '/' ? '/index.html' : p).replace(/^(\.\.[/\\])+/, '');
     try { const data = await readFile(join(WEB, rel)); res.writeHead(200, { 'content-type': MIME[extname(rel)] || 'application/octet-stream' }); res.end(data); }

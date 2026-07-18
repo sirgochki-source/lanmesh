@@ -41,9 +41,11 @@ test('renderDetailed map/traffic — заглушки «скоро»', () => {
   assert.match(renderDetailed(st, 'traffic', {}), /скоро/i);
 });
 
-test('renderDetailed settings — тоже пока заглушка (реальный контент в Task 13)', () => {
+test('renderDetailed settings — делегирует в renderSettings (Task 13)', () => {
   const st = { running: true, selfEndpoint: 'x', networks: [{ name: 'n', tag: 't', signals: [], peers: [] }] };
-  assert.match(renderDetailed(st, 'settings', {}), /скоро/i);
+  const s = renderDetailed(st, 'settings', {});
+  assert.match(s, /сигналк/i);
+  assert.doesNotMatch(s, /скоро/i);
 });
 
 test('renderDetailed list содержит плитку качества', () => {
