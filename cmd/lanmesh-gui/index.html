@@ -61,7 +61,8 @@
   .pdot.direct { background:var(--ok); }
   .pdot.relay { background:var(--accent); }
   .pdot.connecting { background:var(--warn); box-shadow:0 0 0 0 var(--warn); animation:pulse 1.6s infinite; }
-  .pname { font-weight:600; font-size:13px; white-space:nowrap; flex:none; }
+  .pname { font-weight:600; font-size:13px; white-space:nowrap; overflow:hidden;
+    text-overflow:ellipsis; flex:0 1 auto; max-width:55%; }
   .pip { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px; color:var(--muted);
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
   .badge { font-size:11px; font-weight:600; padding:3px 8px; border-radius:999px; white-space:nowrap; }
@@ -331,7 +332,9 @@ function dispName(s){ return esc(String(s).replace(/[\u0000-\u001F\u200B-\u200F\
 
 async function poll() {
   try {
-    const st = await (await fetch("/api/state")).json();
+    const r = await fetch("/api/state");
+    if (!r.ok) return; // ошибка бэкенда — не рендерим её как валидное «не подключено»
+    const st = await r.json();
     render(st);
     if (st.sendLogs !== undefined && document.activeElement !== $("#sendLogs")) {
       $("#sendLogs").checked = st.sendLogs;

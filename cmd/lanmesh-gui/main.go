@@ -29,6 +29,7 @@ import (
 
 	"github.com/sirgochki-source/lanmesh/internal/app"
 	"github.com/sirgochki-source/lanmesh/internal/crypto"
+	"github.com/sirgochki-source/lanmesh/internal/defaults"
 	"github.com/sirgochki-source/lanmesh/internal/logbuf"
 	"github.com/sirgochki-source/lanmesh/internal/signal"
 )
@@ -44,35 +45,15 @@ var indexHTML []byte
 
 const (
 	listenAddr = "127.0.0.1:8737"
-	// defaultRelayAddr — запасной путь для пиров за симметричным NAT (в частности,
-	// за мобильным CGNAT), где прямое пробитие невозможно в принципе. ПЛЕЙСХОЛДЕР:
-	// впиши адрес своего ретранслятора (cmd/lanmesh-relay) в настройках панели или
-	// в config.json — сюда свои боевые адреса не коммитим.
-	defaultRelayAddr = "relay.example.com:25555"
-	ifaceName        = "lanmesh"
+	ifaceName  = "lanmesh"
 )
 
-// defaultSignalURLs — ВСЕ сигналки сразу, а не «основная и запасная»: клиент
-// объявляется в каждой и сливает списки участников. Дефолт; пользователь может
-// переопределить список в настройках панели.
-//
-// Своя на orangepi нужна не для красоты: у части провайдеров DPI режет
-// `*.workers.dev` по имени в ClientHello — TCP встаёт, а рукопожатие рвут, и
-// клиент получает EOF. Браузер это скрывает (прячет SNI через ECH), curl и Go —
-// нет. Обратное тоже бывает: домашний сервер лежит, а Cloudflare жив.
-//
-// Своя идёт дважды: 25557 под TLS (по HTTP тег сети виден по дороге, а тег —
-// ключ на чтение чужой диагностики через /logs) и 25556 плайнтекстом ради
-// клиентов старых сборок. Второй строчке жить, пока все не обновятся.
-//
-// ПЛЕЙСХОЛДЕРЫ: подставь свои сигналки (Cloudflare Worker из worker/ и/или свой
-// сервер cmd/lanmesh-signal) в настройках панели или в config.json. Боевые адреса
-// в репозиторий не коммитим.
-var defaultSignalURLs = []string{
-	"https://your-worker.example.workers.dev",
-	"https://your-server.example.com:25557",
-	"http://your-server.example.com:25556",
-}
+// Серверы по умолчанию — общие с headless-клиентом, см. internal/defaults
+// (плейсхолдеры; боевые адреса подставляются в настройках панели или config.json).
+var (
+	defaultSignalURLs = defaults.SignalURLs
+	defaultRelayAddr  = defaults.RelayAddr
+)
 
 var (
 	// sess собирается в main() из эффективных серверов (конфиг или дефолт), а не

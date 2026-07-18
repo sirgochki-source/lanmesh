@@ -42,3 +42,38 @@ func TestNetworkNameIsSalt(t *testing.T) {
 		t.Fatal("имя сети не влияет на ключ")
 	}
 }
+
+func TestOpenRejectsShortFrame(t *testing.T) {
+	s, _ := NewSealer(DeriveNetworkKey("myteam", "hunter2"))
+	// Кадр короче нонса не должен паниковать — только ошибка.
+	for _, n := range []int{0, 1, 5, 23} {
+		if _, err := s.Open(make([]byte, n)); err == nil {
+			t.Fatalf("Open принял кадр длины %d, ожидалась ошибка", n)
+		}
+	}
+}
+
+func TestOpenRejectsTamperedFrame(t *testing.T) {
+	s, _ := NewSealer(DeriveNetworkKey("myteam", "hunter2"))
+	frame, _ := s.Seal([]byte("важные данные"))
+	// Порча одного бита в любой позиции должна валить аутентификацию AEAD.
+	for _, i := range []int{0, len(frame) / 2, len(frame) - 1} {
+		bad := append([]byte(nil), frame...)
+		bad[i] ^= 0x01
+		if _, err := s.Open(bad); err == nil {
+			t.Fatalf("Open принял кадр с испорченным байтом %d — тег не проверен", i)
+		}
+	}
+}
+
+func TestSealNonceIsUnique(t *testing.T) {
+	// Два Seal одного и того же текста должны давать разные нонсы (первые 24 байта).
+	// Страховка от катастрофической регрессии — повторного использования нонса.
+	s, _ := NewSealer(DeriveNetworkKey("myteam", "hunter2"))
+	f1, _ := s.Seal([]byte("одно и то же"))
+	f2, _ := s.Seal([]byte("одно и то же"))
+	const nonceSize = 24 // XChaCha20-Poly1305
+	if bytes.Equal(f1[:nonceSize], f2[:nonceSize]) {
+		t.Fatal("нонс повторился между двумя Seal — конфиденциальность под угрозой")
+	}
+}

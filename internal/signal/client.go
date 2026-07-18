@@ -75,7 +75,10 @@ func (c *Client) Register(ctx context.Context, req proto.RegisterRequest) (*prot
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("signal: register вернул %d", resp.StatusCode)
+		// Дочитываем тело (как в SendLogs) и подмешиваем в ошибку — сервер часто
+		// пишет туда причину отказа (переполнен реестр, кривой тег и т.п.).
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return nil, fmt.Errorf("signal: register вернул %d: %s", resp.StatusCode, msg)
 	}
 	var out proto.RegisterResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
