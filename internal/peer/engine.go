@@ -135,6 +135,12 @@ type peerState struct {
 	pingSent time.Time
 	rtt      time.Duration // 0 = ещё не измерен
 	rttAt    time.Time     // когда измерен — чтобы не показывать протухший
+
+	// Счётчики данных (FrameData/FrameBroadcast): всего отправлено пиру / принято
+	// от него, байт полезной нагрузки. Атомарные — обновляются в горячих путях
+	// send/recv без общего лока движка (см. sendFrame/sendToAll/netToTun).
+	bytesTx atomic.Uint64
+	bytesRx atomic.Uint64
 }
 
 // Engine связывает TUN и UDP-сокет, ведёт таблицы пиров ПО СЕТЯМ и гоняет между
@@ -618,6 +624,7 @@ func (e *Engine) netToTun() error {
 		switch typ {
 		case proto.FrameData, proto.FrameBroadcast:
 			if len(payload) > 0 {
+				ps.bytesRx.Add(uint64(len(payload)))
 				_, _ = e.tun.Write(payload)
 			}
 		case proto.FramePunch:
@@ -824,6 +831,8 @@ type PeerView struct {
 	// Signals — через какие сигналки виден этот пир (по порядку signalURLs).
 	// Заполняется в app.Session.State, движок оставляет nil.
 	Signals []bool `json:"signals"`
+	BytesRx uint64 `json:"bytesRx"` // всего принято байт данных от пира
+	BytesTx uint64 `json:"bytesTx"` // всего отправлено байт данных пиру
 }
 
 // PeerViews возвращает отсортированный снимок таблицы пиров сети tag (для панели).
@@ -838,7 +847,8 @@ func (e *Engine) PeerViews(tag [relayTagLen]byte) []PeerView {
 	now := time.Now()
 	out := make([]PeerView, 0, len(n.peers))
 	for _, ps := range n.peers {
-		v := PeerView{Name: ps.name, VirtualIP: ps.virtualIP.String(), LastSeenMs: -1, RttMs: -1}
+		v := PeerView{Name: ps.name, VirtualIP: ps.virtualIP.String(), LastSeenMs: -1, RttMs: -1,
+			BytesRx: ps.bytesRx.Load(), BytesTx: ps.bytesTx.Load()}
 		switch {
 		case ps.active != nil && now.Sub(ps.lastRecv) < peerTimeout:
 			v.Status = "direct"
@@ -904,8 +914,12 @@ func (e *Engine) sendFrame(ps *peerState, typ byte, payload []byte) {
 		e.writeFrame(n, dst, typ, payload)
 	case relayOK:
 		e.writeFrameRelay(n, id, typ, payload)
+	default:
+		return // путь ещё не найден — данные дропаем, как и раньше
 	}
-	// Иначе путь ещё не найден — данные дропаем, как и раньше.
+	if typ == proto.FrameData {
+		ps.bytesTx.Add(uint64(len(payload)))
+	}
 }
 
 // sendToAll рассылает кадр всем пирам ВСЕХ сетей (эмуляция широковещалки). Пакет
@@ -917,6 +931,7 @@ func (e *Engine) sendToAll(typ byte, payload []byte) {
 		n      *network
 		id     proto.PeerID
 		direct *net.UDPAddr
+		ps     *peerState
 	}
 	now := time.Now()
 	var jobs []job
@@ -924,9 +939,9 @@ func (e *Engine) sendToAll(typ byte, payload []byte) {
 		for _, ps := range nw.peers {
 			switch {
 			case ps.directAddr(now) != nil:
-				jobs = append(jobs, job{n: nw, direct: ps.active})
+				jobs = append(jobs, job{n: nw, direct: ps.active, ps: ps})
 			case e.relay != nil && ps.usableRelay(now):
-				jobs = append(jobs, job{n: nw, id: ps.id})
+				jobs = append(jobs, job{n: nw, id: ps.id, ps: ps})
 			}
 		}
 	}
@@ -937,6 +952,9 @@ func (e *Engine) sendToAll(typ byte, payload []byte) {
 			e.writeFrame(j.n, j.direct, typ, payload)
 		} else {
 			e.writeFrameRelay(j.n, j.id, typ, payload)
+		}
+		if typ == proto.FrameData || typ == proto.FrameBroadcast {
+			j.ps.bytesTx.Add(uint64(len(payload)))
 		}
 	}
 }
