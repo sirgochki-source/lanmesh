@@ -31,12 +31,23 @@ import (
 // logFlushInterval — как часто сливаем накопленный лог на сигналку.
 const logFlushInterval = 30 * time.Second
 
-// Темп регистрации на сигналках. Быстрый, пока сеть «неустаканена», и медленный,
-// когда все пиры на свежем прямом пути или мы одни. См. Engine.SettledForPolling.
+// Темп регистрации на сигналках. Разгонный на старте и при появлении нового
+// участника (чтобы стороны быстро обменялись адресами и начали пробитие NAT),
+// быстрый, пока сеть «неустаканена», и медленный, когда все пиры на свежем прямом
+// пути или мы одни. См. Engine.SettledForPolling.
+//
+// Почему разгон важен: пробитие NAT требует, чтобы ОБЕ стороны долбили навстречу.
+// Пир узнаёт эндпоинт соседа только из ответа сигналки, поэтому пока один опрашивает
+// её раз в 20с, встречное пробитие может не начаться до следующего опроса — и
+// «первичное подключение» тянется десятки секунд. В разгоне опрос раз в registerBurst
+// секунд, но лишь burstWindow после старта/появления пира — потом темп падает, чтобы
+// не молотить сигналку из-за пира, до которого прямого пути нет (только релей).
 const (
-	registerFast = 20 * time.Second
-	registerSlow = 45 * time.Second
-	settleWarmup = 60 * time.Second
+	registerBurst = 2 * time.Second
+	registerFast  = 20 * time.Second
+	registerSlow  = 45 * time.Second
+	settleWarmup  = 60 * time.Second
+	burstWindow   = 25 * time.Second
 )
 
 // StateView — снимок состояния узла для интерфейса.
@@ -601,6 +612,10 @@ func (s *Session) registerLoop(ns *netSession) {
 		VirtualIP:  s.selfIP.String(),
 	}
 
+	// prevPeerKey/lastPeerChange отслеживают смену состава участников: появление или
+	// уход пира возвращает нас в разгонный темп, чтобы быстро пробить нового.
+	var prevPeerKey string
+	var lastPeerChange time.Time
 	for {
 		req.Endpoints = s.nodeEndpoints()
 
@@ -682,8 +697,27 @@ func (s *Session) registerLoop(ns *netSession) {
 			eng.SyncPeers(ns.tagB, list)
 		}
 
+		// Заметили смену состава участников — перезапускаем окно разгона.
+		key := peerSetKey(merged)
+		now := time.Now()
+		if key != prevPeerKey {
+			prevPeerKey = key
+			lastPeerChange = now
+		}
+
+		settled := eng != nil && eng.SettledForPolling()
+		inBurst := now.Sub(startedAt) < burstWindow ||
+			(!lastPeerChange.IsZero() && now.Sub(lastPeerChange) < burstWindow)
+		// Разгоняемся в стартовом окне, пока не подключены все известные пиры
+		// напрямую. Когда мы одни, settled=true, но опрашивать надо часто — иначе
+		// первого соседа не увидим до registerFast. Когда все на прямом пути
+		// (settled && пиры есть) — разгон не нужен, даже если окно ещё не вышло.
+		burst := inBurst && !(settled && len(merged) > 0)
 		next := registerFast
-		if time.Since(startedAt) > settleWarmup && eng != nil && eng.SettledForPolling() {
+		switch {
+		case burst:
+			next = registerBurst // холодный старт/новый пир — быстро сводим адреса
+		case settled && time.Since(startedAt) > settleWarmup:
 			next = registerSlow
 		}
 		select {
@@ -752,6 +786,20 @@ func (s *Session) nodeEndpoints() []string {
 		eng.SetSelfCandidates(endpoints)
 	}
 	return endpoints
+}
+
+// peerSetKey — стабильная сигнатура состава участников (отсортированные PeerID),
+// чтобы registerLoop замечал появление/уход пира и включал разгонный темп.
+func peerSetKey(m map[string]proto.PeerInfo) string {
+	if len(m) == 0 {
+		return ""
+	}
+	ids := make([]string, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return strings.Join(ids, "|")
 }
 
 // short укорачивает URL до хоста.
