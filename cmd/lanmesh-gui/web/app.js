@@ -26,6 +26,18 @@ document.addEventListener('click', (e) => {
   const v = e.target.closest('[data-view]')?.dataset.view;
   if (v) { activeView = v; render(lastState); }
 });
+// Копирование IP при клике на адрес в компактном списке
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-copy]');
+  if (!el) return;
+  const ip = el.dataset.copy;
+  if (navigator.clipboard) navigator.clipboard.writeText(ip).catch(() => {});
+  const chip = document.createElement('div');
+  chip.className = 'copytoast';
+  chip.textContent = 'IP ' + ip + ' скопирован';
+  document.body.appendChild(chip);
+  setTimeout(() => chip.remove(), 1500);
+});
 // Отзывчивость: если пользователь не выбирал режим руками — следуем ширине окна.
 new ResizeObserver(() => { if (!manual) setMode(pickMode(innerWidth)); render(lastState); }).observe(document.documentElement);
 

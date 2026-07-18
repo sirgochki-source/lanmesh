@@ -14,6 +14,10 @@ test('peerRowCompact: класс статуса, vip, пинг', () => {
   assert.match(s, /25\.44\.12\.9/);
   assert.match(s, /18 мс/);
 });
+test('peerRowCompact: IP содержит data-copy для копирования', () => {
+  const s = peerRowCompact({ name: 'X', vip: '25.44.1.2', status: 'direct', rttMs: 10 });
+  assert.match(s, /data-copy="25\.44\.1\.2"/);
+});
 test('peerRowCompact: relay/connecting классы и подпись подключения', () => {
   const relay = peerRowCompact({ name: 'sara_pc', vip: '25.44.31.7', status: 'relay', rttMs: 128 });
   assert.match(relay, /sdot relay/);

@@ -13,7 +13,7 @@ const sdotCls = (s) => s === 'direct' ? 'direct' : s === 'relay' ? 'relay' : 'co
 export function peerRowCompact(peer) {
   return `<div class="row"><span class="sdot ${sdotCls(peer.status)}"></span>`
     + `<span class="nm">${dispName(peer.name || 'узел')}</span><span class="grow"></span>`
-    + `<span class="ip mono">${esc(peer.vip)}</span>${pngHtml(peer)}</div>`;
+    + `<span class="ip mono copyable" data-copy="${esc(peer.vip)}" title="скопировать IP">${esc(peer.vip)}</span>${pngHtml(peer)}</div>`;
 }
 
 export function netCardCompact(net) {
