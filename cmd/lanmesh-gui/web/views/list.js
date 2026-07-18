@@ -1,7 +1,7 @@
 // Компактный список участников: узкие карточки-строки без аватарок,
 // точка-статус слева, IP и пинг справа (см. docs/superpowers/design-mockups/03-compact-final.html).
 import { dispName, esc } from '../lib/sanitize.js';
-import { fmtRtt, rttClass } from '../lib/format.js';
+import { fmtRtt, rttClass, fmtUptime } from '../lib/format.js';
 
 const pngHtml = (peer) => {
   if (peer.status === 'connecting') return '<span class="png conn">подключение…</span>';
@@ -17,7 +17,7 @@ export function peerRowCompact(peer) {
 }
 
 export function netCardCompact(net) {
-  const peers = (net.peers || []).slice().sort((a, b) => (a.vip < b.vip ? -1 : 1));
+  const peers = (net.peers || []).slice().sort((a, b) => (a.vip < b.vip ? -1 : a.vip > b.vip ? 1 : 0));
   const body = peers.length
     ? peers.map(peerRowCompact).join('')
     : `<div class="empty">Пока никого. Позови друга в сеть <b>${dispName(net.name)}</b> с тем же паролем или пришли ссылку кнопкой «Пригласить».</div>`;
@@ -36,7 +36,8 @@ export function renderCompact(state) {
       + 'Обычно сеть режет исходящий UDP.</div>' : '';
   const self = state.running
     ? `<div class="self"><span><span class="k">твой IP</span><span class="v mono">${esc(state.selfIP || '—')}</span></span>`
-      + `<span><span class="k">внешний</span><span class="v">${state.selfEndpoint ? 'определён' : 'не определён'}</span></span></div>` : '';
+      + `<span><span class="k">внешний</span><span class="v">${state.selfEndpoint ? 'определён' : 'не определён'}</span></span>`
+      + `<span><span class="k">аптайм</span><span class="v up">${fmtUptime(state.uptimeSec || 0)}</span></span></div>` : '';
   const cards = nets.map(netCardCompact).join('');
   return warn + self + cards + addFormHtml(nets.length === 0);
 }

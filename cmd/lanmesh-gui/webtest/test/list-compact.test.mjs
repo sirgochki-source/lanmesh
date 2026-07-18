@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { peerRowCompact, netCardCompact, renderCompact, addFormHtml, renderView } from '../../web/views/list.js';
+import { fmtUptime } from '../../web/lib/format.js';
 
 // renderView читает window.renderDetailed (заглушка до Task 11); в браузере window
 // всегда есть, но в node --test его нет — подставляем минимальный shim, чтобы
@@ -68,6 +69,12 @@ test('renderCompact показывает warn при отсутствии вне
 test('renderCompact не показывает warn, когда внешний адрес есть', () => {
   const s = renderCompact({ running: true, selfEndpoint: 'x', networks: [] });
   assert.doesNotMatch(s, /Внешний адрес неизвестен/);
+});
+test('renderCompact: self-строка показывает аптайм', () => {
+  const s = renderCompact({ running: true, selfEndpoint: 'x', uptimeSec: 8040, networks: [] });
+  assert.match(s, /аптайм/);
+  const expectedUptime = fmtUptime(8040);
+  assert.match(s, new RegExp(expectedUptime));
 });
 test('renderCompact: без running нет self-строки и карточек, но форма добавления есть', () => {
   const s = renderCompact({ running: false, selfEndpoint: '', networks: [] });
