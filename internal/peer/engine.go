@@ -423,7 +423,11 @@ func (e *Engine) SyncPeers(tag [relayTagLen]byte, list []proto.PeerInfo) {
 		ps.absentSince = time.Time{} // снова в списке
 		ps.name = info.Name
 		ps.virtualIP = vip
-		ps.endpoints = eps
+		// НЕ затираем список кандидатов пустым/укороченным ответом сигналки: глюк
+		// хранилища на сервере (пир виден, но Endpoints пуст) иначе стёр бы и
+		// P2P-кандидаты от гостипа — единственный рабочий путь при symmetric NAT.
+		// Свежий список от сигналки идёт первым, прежние адреса добираются следом.
+		ps.endpoints = mergeEndpoints(eps, ps.endpoints)
 		n.byIP[vip] = ps
 	}
 
@@ -696,6 +700,17 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 					degraded = true // путь к этому пиру не идеален — пора освежить свой адрес
 				}
 
+				// Gossip считаем ДО пинг-ветки: иначе её `continue` (когда пинг слали
+				// недавно) проглатывал бы рассылку кандидатов, а lastGossip всё равно
+				// сбрасывался — и обмен адресами растягивался вдвое против addrGossipTick.
+				if gossipDue && len(cands) > 0 && (confirmed || relayPath) {
+					if confirmed {
+						gossips = append(gossips, gossipJob{n: nw, dst: ps.active, reflex: ps.active.String()})
+					} else {
+						gossips = append(gossips, gossipJob{n: nw, id: ps.id}) // через relay reflex не знаем
+					}
+				}
+
 				if confirmed || relayPath {
 					// Пингуем по тому пути, которым реально ходим: так RTT честно
 					// показывает задержку рабочего маршрута, а не выдуманного.
@@ -723,14 +738,6 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 					// обоих NAT, и это же ловит смену адреса без ретранслятора.
 					for _, ep := range ps.endpoints {
 						punches = append(punches, punchJob{n: nw, dst: ep})
-					}
-				}
-				if gossipDue && len(cands) > 0 && (confirmed || relayPath) {
-					// Рассылаем свои кандидаты (и reflex-адрес пира) по рабочему пути.
-					if confirmed {
-						gossips = append(gossips, gossipJob{n: nw, dst: ps.active, reflex: ps.active.String()})
-					} else {
-						gossips = append(gossips, gossipJob{n: nw, id: ps.id}) // через relay reflex не знаем
 					}
 				}
 			}
@@ -1033,6 +1040,35 @@ func (e *Engine) handleAddr(ps *peerState, reflex string, cands []string) {
 // mergeCandidates доливает присланные кандидаты в endpoints пира без дублей и с
 // потолком maxCandidates: чужой госсип не должен вытеснить рабочие адреса.
 // Вызывать под e.mu.Lock.
+// mergeEndpoints объединяет свежий список кандидатов от сигналки с уже известными
+// (в т.ч. добытыми P2P-гостипом), без дублей и не длиннее maxCandidates. Свежие идут
+// первыми. Пустой fresh НЕ стирает существующие — сохраняем что было.
+func mergeEndpoints(fresh, existing []*net.UDPAddr) []*net.UDPAddr {
+	if len(fresh) == 0 {
+		return existing
+	}
+	out := make([]*net.UDPAddr, 0, maxCandidates)
+	seen := make(map[string]bool, maxCandidates)
+	add := func(a *net.UDPAddr) {
+		if a == nil || len(out) >= maxCandidates {
+			return
+		}
+		k := a.String()
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		out = append(out, a)
+	}
+	for _, a := range fresh {
+		add(a)
+	}
+	for _, a := range existing {
+		add(a)
+	}
+	return out
+}
+
 func mergeCandidates(ps *peerState, cands []string) {
 	have := make(map[string]bool, len(ps.endpoints))
 	for _, a := range ps.endpoints {

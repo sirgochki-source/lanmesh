@@ -118,6 +118,10 @@ type Session struct {
 	// держит mu, под которым работают горутины и State.
 	opMu sync.Mutex
 	mu   sync.Mutex
+	// endpointMu сериализует пересчёт внешнего адреса узла: nodeEndpoints зовёт
+	// КАЖДЫЙ registerLoop (по одному на сеть) со своим тактом, и без сериализации
+	// параллельные вызовы писали неактуальное поверх свежего и накручивали extChurn.
+	endpointMu sync.Mutex
 
 	// Узел (общий, пока поднят).
 	up           bool
@@ -668,6 +672,12 @@ func (s *Session) registerLoop(ns *netSession) {
 				seenIP = r.seen
 			}
 			for _, p := range r.peers {
+				// Разные сигналки могут вернуть РАЗНЫЕ кандидаты одного пира (лаг
+				// репликации): объединяем эндпоинты, а не затираем последним ответом,
+				// иначе валидный путь от одной сигналки теряется из-за другой.
+				if prev, ok := merged[p.PeerID]; ok {
+					p.Endpoints = unionStrings(prev.Endpoints, p.Endpoints)
+				}
 				merged[p.PeerID] = p
 				sl := peerSig[p.VirtualIP]
 				if sl == nil {
@@ -742,10 +752,14 @@ func (s *Session) registerLoop(ns *netSession) {
 // локальные. Обновляет s.selfEndpoint/extChurn (compare-and-set под mu дедуплицирует
 // одинаковые изменения, приходящие из разных registerLoop-ов).
 func (s *Session) nodeEndpoints() []string {
+	s.endpointMu.Lock()
+	defer s.endpointMu.Unlock()
+
 	s.mu.Lock()
 	eng := s.engine
 	stunExt := s.stunExt
 	localPort := s.localPort
+	cur := s.selfEndpoint
 	s.mu.Unlock()
 
 	var liveStun, selfRefl, relayRaw string
@@ -772,6 +786,19 @@ func (s *Session) nodeEndpoints() []string {
 			ext = c
 		}
 	}
+	// Гистерезис: если прежний внешний адрес всё ещё среди источников — держим его,
+	// не переключаясь между одновременно валидными значениями. У symmetric NAT
+	// relay-reflex и живой STUN видят РАЗНЫЕ порты (разный адресат → разный маппинг) —
+	// без стикинеса ext скакал каждый раунд, накручивая extChurn и ложное «адрес
+	// флапает», да ещё и рассылал пирам нестабильный self-candidate.
+	if cur != "" {
+		for _, c := range []string{stunExt, selfRefl, relayPub, liveStun} {
+			if c == cur {
+				ext = cur
+				break
+			}
+		}
+	}
 	front := make([]string, 0, 4)
 	seenEP := make(map[string]bool)
 	for _, c := range []string{ext, liveStun, relayPub, selfRefl} {
@@ -783,7 +810,7 @@ func (s *Session) nodeEndpoints() []string {
 	endpoints := append(front, localEndpoints(localPort)...)
 
 	s.mu.Lock()
-	if ext != "" && s.selfEndpoint != "" && ext != s.selfEndpoint {
+	if ext != "" && cur != "" && ext != cur {
 		s.extChurn++
 	}
 	s.selfEndpoint = ext
@@ -793,6 +820,23 @@ func (s *Session) nodeEndpoints() []string {
 		eng.SetSelfCandidates(endpoints)
 	}
 	return endpoints
+}
+
+// unionStrings объединяет два списка без дублей, сохраняя порядок (сначала a, затем
+// новые из b). Пустые строки отбрасывает.
+func unionStrings(a, b []string) []string {
+	out := make([]string, 0, len(a)+len(b))
+	seen := make(map[string]bool, len(a)+len(b))
+	for _, list := range [][]string{a, b} {
+		for _, s := range list {
+			if s == "" || seen[s] {
+				continue
+			}
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // peerSetKey — стабильная сигнатура состава участников (отсортированные PeerID),
