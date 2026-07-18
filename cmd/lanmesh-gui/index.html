@@ -311,11 +311,13 @@ function peerRowHTML(p, sigs) {
     : p.status === "relay" ? ["relay", "через ретранслятор"]
     : ["connecting", "подключение…"];
   const seen = p.lastSeenMs >= 0 ? " · " + fmtSeen(p.lastSeenMs) : "";
+  const dots = '<span class="sigdots" title="через какие сигналки виден узел">' + dotsHTML(sigs, p.signals || []) + '</span>';
   return '<div class="peer" title="' + st[1] + esc(seen) + '">' +
     '<span class="pdot ' + st[0] + '"></span>' +
     '<span class="pname">' + esc(p.name || "узел") + '</span>' +
     '<span class="pip">' + esc(p.vip) + '</span>' +
     '<span style="flex:1"></span>' +
+    dots +
     rttHTML +
     '<button class="copy" data-ip="' + esc(p.vip) + '" title="скопировать IP">⧉</button>' +
   '</div>';
