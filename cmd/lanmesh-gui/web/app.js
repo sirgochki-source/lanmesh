@@ -73,8 +73,10 @@ function refreshView() { document.activeElement?.blur(); poll(); }
 // ⤢/⤡ и навигация
 document.addEventListener('click', (e) => {
   const act = e.target.closest('[data-act]')?.dataset.act;
-  if (act === 'expand') { manual = true; localStorage.setItem('lm-mode', 'detailed'); setMode('detailed'); render(lastState); return; }
-  if (act === 'collapse') { manual = true; localStorage.setItem('lm-mode', 'compact'); setMode('compact'); render(lastState); return; }
+  // window.lmResize существует только в нативном окне (webview2.Bind в Go) — в
+  // браузере/mock его нет, поэтому гвардим. Меняет размер окна под режим.
+  if (act === 'expand') { manual = true; localStorage.setItem('lm-mode', 'detailed'); setMode('detailed'); window.lmResize && window.lmResize('detailed'); render(lastState); return; }
+  if (act === 'collapse') { manual = true; localStorage.setItem('lm-mode', 'compact'); setMode('compact'); window.lmResize && window.lmResize('compact'); render(lastState); return; }
   // Клик по сети в рейле: выбираем её активной и переключаемся на список
   // (элемент несёт и data-net, и data-view="list" — обрабатываем здесь и выходим,
   // чтобы не сработала ещё раз ветка data-view ниже).

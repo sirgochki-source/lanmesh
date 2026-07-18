@@ -10,11 +10,13 @@ package main
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -40,8 +42,8 @@ func netTag(name, password string) string {
 	return signal.NetworkTag(crypto.DeriveNetworkKey(name, password))
 }
 
-//go:embed index.html
-var indexHTML []byte
+//go:embed web
+var webFS embed.FS
 
 const (
 	listenAddr = "127.0.0.1:8737"
@@ -162,7 +164,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", handleIndex)
+	mux.Handle("/", staticHandler())
 	mux.HandleFunc("/api/state", guard(handleState))
 	mux.HandleFunc("/api/addnetwork", guard(handleAddNetwork))
 	mux.HandleFunc("/api/leavenetwork", guard(handleLeaveNetwork))
@@ -185,8 +187,8 @@ func main() {
 		Debug: false,
 		WindowOptions: webview2.WindowOptions{
 			Title:  "lanmesh",
-			Width:  430,
-			Height: 640,
+			Width:  980,
+			Height: 660,
 			Center: true,
 		},
 	})
@@ -195,18 +197,43 @@ func main() {
 	}
 	defer w.Destroy()
 	w.SetSize(360, 480, webview2.HintMin)
+	// Мост JS→native: кнопка ⤢/⤡ в панели меняет размер нативного окна под режим
+	// (компакт узкое / подробный широкое). Размер меняем на UI-потоке через Dispatch.
+	w.Bind("lmResize", func(mode string) {
+		w.Dispatch(func() {
+			if mode == "detailed" {
+				w.SetSize(980, 660, webview2.HintNone)
+			} else {
+				w.SetSize(420, 720, webview2.HintNone)
+			}
+		})
+	})
 	w.Navigate("http://" + listenAddr)
 	w.Run()
 	sess.Stop()
 }
 
-func handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
+// init регистрирует правильные MIME-типы. На Windows mime.TypeByExtension иначе
+// берёт их из реестра и может отдать .js как text/plain — тогда WebView2 (строгая
+// проверка MIME для ES-модулей) откажется исполнять модули и панель не поднимется.
+func init() {
+	mime.AddExtensionType(".html", "text/html; charset=utf-8")
+	mime.AddExtensionType(".css", "text/css; charset=utf-8")
+	mime.AddExtensionType(".js", "text/javascript; charset=utf-8")
+	mime.AddExtensionType(".mjs", "text/javascript; charset=utf-8")
+	mime.AddExtensionType(".svg", "image/svg+xml")
+	mime.AddExtensionType(".json", "application/json; charset=utf-8")
+}
+
+// staticHandler отдаёт встроенные ассеты панели (web/): index.html и ES-модули.
+// Ручки /api/* регистрируются отдельными, более специфичными паттернами и имеют
+// приоритет над этим catch-all "/".
+func staticHandler() http.Handler {
+	webRoot, err := fs.Sub(webFS, "web")
+	if err != nil {
+		log.Fatalf("web sub-fs: %v", err)
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(indexHTML)
+	return http.FileServer(http.FS(webRoot))
 }
 
 func handleState(w http.ResponseWriter, r *http.Request) {
