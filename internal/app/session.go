@@ -217,14 +217,21 @@ func (s *Session) AddNetwork(network, password string) error {
 		return nil // уже в этой сети
 	}
 
+	broughtUp := false
 	if !up {
 		if err := s.bringUpNode(); err != nil {
 			return err
 		}
+		broughtUp = true
 	}
 
 	sealer, err := crypto.NewSealer(key)
 	if err != nil {
+		// Узел подняли ради этой сети, а она не встала — не оставляем висеть узел
+		// (TUN-адаптер, сокет, горутины) без единой сети до явного Stop().
+		if broughtUp {
+			s.tearDownNode()
+		}
 		return err
 	}
 	s.engine.AddNetwork(tagB, sealer, network)
@@ -243,7 +250,7 @@ func (s *Session) AddNetwork(network, password string) error {
 	s.mu.Unlock()
 
 	go s.registerLoop(ns)
-	log.Printf("сеть %q подключена", network)
+	log.Printf("сеть %s подключена", tagShort(tag))
 	return nil
 }
 
@@ -261,14 +268,14 @@ func (s *Session) RemoveNetwork(tag [32]byte) {
 	delete(s.nets, tag)
 	s.rebuildFanoutLocked()
 	remaining := len(s.nets)
-	name := ns.name
+	tagHex := ns.tag
 	s.mu.Unlock()
 
 	close(ns.stop)
 	if s.engine != nil {
 		s.engine.RemoveNetwork(tag)
 	}
-	log.Printf("сеть %q отключена", name)
+	log.Printf("сеть %s отключена", tagShort(tagHex))
 	if remaining == 0 {
 		s.tearDownNode()
 	}
@@ -687,7 +694,7 @@ func (s *Session) registerLoop(ns *netSession) {
 		s.mu.Unlock()
 
 		if len(errs) > 0 {
-			log.Printf("сеть %q: сигналка (%d из %d ответили): %s", ns.name, okCount, len(clients), strings.Join(errs, "; "))
+			log.Printf("сеть %s: сигналка (%d из %d ответили): %s", tagShort(ns.tag), okCount, len(clients), strings.Join(errs, "; "))
 		}
 		if okCount > 0 && eng != nil {
 			list := make([]proto.PeerInfo, 0, len(merged))
@@ -800,6 +807,16 @@ func peerSetKey(m map[string]proto.PeerInfo) string {
 	}
 	sort.Strings(ids)
 	return strings.Join(ids, "|")
+}
+
+// tagShort — первые 8 hex-символов тега сети для логов. Имя сети в лог НЕ пишем:
+// лог по умолчанию уходит на сигналку, а имя/пароль сети сервер знать не должен
+// (см. proto — тег несекретен и невосстановим, а имя восстановимо).
+func tagShort(tag string) string {
+	if len(tag) > 8 {
+		return tag[:8] + "…"
+	}
+	return tag
 }
 
 // short укорачивает URL до хоста.

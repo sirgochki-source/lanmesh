@@ -262,9 +262,14 @@ func handleAddNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Серверы из приглашения принимаем ДО поднятия узла (на ходу их менять нельзя).
-	note := applyInviteServers(req.Signals, req.Relay)
+	// Если вход в сеть затем не удастся — откатываем, чтобы не остаться с чужими
+	// серверами без самой сети.
+	note, revert := applyInviteServers(req.Signals, req.Relay)
 
 	if err := sess.AddNetwork(req.Network, req.Password); err != nil {
+		if revert != nil {
+			revert()
+		}
 		writeJSON(w, map[string]string{"error": err.Error()}, http.StatusInternalServerError)
 		return
 	}
@@ -288,7 +293,9 @@ func handleAddNetwork(w http.ResponseWriter, r *http.Request) {
 // это гонка, да и уже поднятые сети разъедутся; (2) если у друга уже свои кастомные
 // серверы — НЕ перетираем их (это его выбор и общая настройка всех его сетей),
 // только предупреждаем. На чистом клиенте (дефолты) — просто принимаем.
-func applyInviteServers(rawSignals []string, relay *string) string {
+// Возвращает заметку для показа и функцию отката (nil, если менять было нечего) —
+// вызывающий откатывает, если вход в сеть после смены серверов не удался.
+func applyInviteServers(rawSignals []string, relay *string) (string, func()) {
 	var sigs []string
 	for _, u := range rawSignals {
 		u = strings.TrimSpace(u)
@@ -303,7 +310,7 @@ func applyInviteServers(rawSignals []string, relay *string) string {
 	wantSignals := len(sigs) > 0
 	wantRelay := relay != nil
 	if !wantSignals && !wantRelay {
-		return ""
+		return "", nil
 	}
 
 	cfgMu.Lock()
@@ -320,16 +327,20 @@ func applyInviteServers(rawSignals []string, relay *string) string {
 	}
 	// Уже такие же — ничего делать не нужно (и не поднимаем шум).
 	if sameStrings(newSignals, effectiveSignals(c)) && newRelay == effectiveRelay(c) {
-		return ""
+		return "", nil
 	}
 	if len(c.Signals) > 0 || c.Relay != nil {
-		return "у тебя настроены свои серверы — из приглашения их не менял"
+		return "у тебя настроены свои серверы — из приглашения их не менял", nil
 	}
 
 	if err := sess.SetSignalURLs(newSignals); err != nil {
-		return "чтобы принять серверы из приглашения, сначала отключись от сетей"
+		return "чтобы принять серверы из приглашения, сначала отключись от сетей", nil
 	}
 	sess.UseRelay(newRelay)
+
+	// Прежнее состояние для возможного отката.
+	prevSignals, prevRelay := c.Signals, c.Relay
+	prevEffSignals, prevEffRelay := effectiveSignals(c), effectiveRelay(c)
 
 	cfgMu.Lock()
 	if wantSignals {
@@ -342,7 +353,17 @@ func applyInviteServers(rawSignals []string, relay *string) string {
 	saveConfig(cfg)
 	cfgMu.Unlock()
 	log.Printf("серверы приняты из приглашения: сигналок %d, relay %q", len(newSignals), newRelay)
-	return ""
+
+	revert := func() {
+		_ = sess.SetSignalURLs(prevEffSignals) // узел на этот момент снят — не упадёт
+		sess.UseRelay(prevEffRelay)
+		cfgMu.Lock()
+		cfg.Signals, cfg.Relay = prevSignals, prevRelay
+		saveConfig(cfg)
+		cfgMu.Unlock()
+		log.Printf("серверы из приглашения откачены (вход в сеть не удался)")
+	}
+	return "", revert
 }
 
 // sameStrings — равны ли два списка по порядку и составу.

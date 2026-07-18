@@ -8,6 +8,8 @@
 package tun
 
 import (
+	"context"
+	"crypto/sha256"
 	_ "embed"
 	"fmt"
 	"net/netip"
@@ -16,6 +18,8 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wintun"
@@ -56,33 +60,65 @@ type Device struct {
 var wintunDLL []byte
 
 var (
-	wintunOnce sync.Once
-	wintunErr  error
+	wintunMu   sync.Mutex
+	wintunDone bool // dll на месте и совпадает по хэшу — проверять больше не нужно
 )
 
 // ensureWintun распаковывает встроенный wintun.dll РЯДОМ С EXE. Wintun-пакет грузит
 // библиотеку только из папки приложения и System32 (флаги LOAD_LIBRARY_SEARCH_
 // APPLICATION_DIR|SYSTEM32) и игнорирует прочие пути, поэтому кладём именно туда.
-// Так пользователю достаточно одного exe. Выполняется один раз до обращения к Wintun.
+//
+// Идентичность файла проверяем по SHA-256 встроенных байт, а не по размеру: чужая
+// dll того же размера (папка приложения обычно доступна на запись) иначе прошла бы
+// проверку и была бы загружена в процесс с правами администратора. Запись атомарна
+// (временный файл в той же папке + rename), чтобы параллельный запуск не подсунул
+// читателю усечённый файл. Ошибку НЕ кэшируем: временная причина (антивирус держит
+// файл) не должна залипнуть до перезапуска — следующий вызов повторит попытку.
 func ensureWintun() error {
-	wintunOnce.Do(func() {
-		exe, err := os.Executable()
-		if err != nil {
-			wintunErr = err
-			return
+	wintunMu.Lock()
+	defer wintunMu.Unlock()
+	if wintunDone {
+		return nil
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(exe)
+	path := filepath.Join(dir, "wintun.dll")
+	want := sha256.Sum256(wintunDLL)
+
+	// Уже лежит наш файл — не трогаем (перезапись могла бы наткнуться на in-use).
+	if data, err := os.ReadFile(path); err == nil && sha256.Sum256(data) == want {
+		wintunDone = true
+		return nil
+	}
+
+	tmp, err := os.CreateTemp(dir, "wintun-*.tmp")
+	if err != nil {
+		return fmt.Errorf("не удалось распаковать wintun.dll рядом с exe "+
+			"(перенеси exe в папку с правом записи, напр. Загрузки): %w", err)
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(wintunDLL); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("запись wintun.dll: %w", err)
+	}
+	tmp.Close()
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		// Не переименовалось — возможно, файл держит параллельный экземпляр, уже
+		// положивший корректную dll. Перепроверим хэш, прежде чем сдаваться.
+		if data, e := os.ReadFile(path); e == nil && sha256.Sum256(data) == want {
+			wintunDone = true
+			return nil
 		}
-		path := filepath.Join(filepath.Dir(exe), "wintun.dll")
-		// Уже лежит нужного размера (полная сборка/повторный запуск) — не трогаем,
-		// иначе можно наткнуться на залоченный in-use файл.
-		if fi, err := os.Stat(path); err == nil && fi.Size() == int64(len(wintunDLL)) {
-			return
-		}
-		if err := os.WriteFile(path, wintunDLL, 0644); err != nil {
-			wintunErr = fmt.Errorf("не удалось распаковать wintun.dll рядом с exe "+
-				"(перенеси exe в папку с правом записи, напр. Загрузки): %w", err)
-		}
-	})
-	return wintunErr
+		return fmt.Errorf("не удалось заменить wintun.dll рядом с exe "+
+			"(перенеси exe в папку с правом записи, напр. Загрузки): %w", err)
+	}
+	wintunDone = true
+	return nil
 }
 
 // New создаёт адаптер name, назначает ему виртуальный IP ip в подсети /prefixBits
@@ -120,27 +156,40 @@ func New(name string, ip netip.Addr, prefixBits int) (*Device, error) {
 	return d, nil
 }
 
-// setMTU занижает MTU адаптера под накладные расходы туннеля (см. virtualMTU).
-func (d *Device) setMTU(mtu int) error {
-	cmd := exec.Command("netsh", "interface", "ipv4", "set", "subinterface",
-		fmt.Sprintf("%s", d.name), fmt.Sprintf("mtu=%d", mtu), "store=active")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("netsh set mtu: %w (%s)", err, out)
+// runNetsh запускает netsh с таймаутом и БЕЗ видимого окна консоли. Таймаут: netsh
+// эпизодически виснет (битый helper-dll, групповые политики), а вызов идёт под opMu
+// при поднятии узла — без дедлайна завис бы весь старт. HideWindow: GUI-версия без
+// консоли, иначе на каждый вызов мигало бы чёрное окно.
+func runNetsh(args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "netsh", args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("netsh %v: превышен таймаут (10с)", args)
+	}
+	if err != nil {
+		return fmt.Errorf("netsh %v: %w (%s)", args, err, out)
 	}
 	return nil
 }
 
+// setMTU занижает MTU адаптера под накладные расходы туннеля (см. virtualMTU).
+func (d *Device) setMTU(mtu int) error {
+	return runNetsh("interface", "ipv4", "set", "subinterface",
+		d.name, fmt.Sprintf("mtu=%d", mtu), "store=active")
+}
+
 // assignIP выставляет статический адрес на адаптере. netsh надёжнее ручной возни с
-// LUID/IP Helper API и не требует лишних зависимостей.
+// LUID/IP Helper API и не требует лишних зависимостей. Только IPv4: virtualMTU-стек
+// и maskString рассчитаны на него, а netip.Addr формально допускает и IPv6.
 func (d *Device) assignIP(ip netip.Addr, prefixBits int) error {
-	mask := netip.PrefixFrom(ip, prefixBits).Masked()
-	_ = mask
-	cmd := exec.Command("netsh", "interface", "ip", "set", "address",
-		fmt.Sprintf("name=%s", d.name), "static", ip.String(), maskString(prefixBits))
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("netsh set address: %w (%s)", err, out)
+	if !ip.Is4() {
+		return fmt.Errorf("assignIP: ожидался IPv4-адрес, получен %s", ip)
 	}
-	return nil
+	return runNetsh("interface", "ip", "set", "address",
+		fmt.Sprintf("name=%s", d.name), "static", ip.String(), maskString(prefixBits))
 }
 
 // Read блокируется до прихода IP-пакета из ОС и копирует его в buf.

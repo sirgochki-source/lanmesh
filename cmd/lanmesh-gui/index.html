@@ -269,7 +269,7 @@ function netCardHTML(n) {
   const body = peers.length ? peers.map(p => peerRowHTML(p, n.signals)).join("") : emptyNetHTML(n);
   return '<div class="card" style="padding:9px 11px">' +
     '<div style="display:flex; align-items:center; gap:8px; margin-bottom:5px">' +
-      '<span style="font-size:14.5px; font-weight:600">' + dot + ' ' + esc(n.name) + '</span>' +
+      '<span style="font-size:14.5px; font-weight:600">' + dot + ' ' + dispName(n.name) + '</span>' +
       '<span style="color:var(--muted); font-size:12px">· ' + peers.length + '</span>' +
       '<span class="sigdots" title="доступность сигналок">' + dotsHTML(n.signals, null) + '</span>' +
       '<span style="flex:1"></span>' +
@@ -281,7 +281,7 @@ function netCardHTML(n) {
 }
 
 function emptyNetHTML(n) {
-  return '<div class="empty">Пока никого. Позови друга в сеть <b>' + esc(n.name) +
+  return '<div class="empty">Пока никого. Позови друга в сеть <b>' + dispName(n.name) +
     '</b> с тем же паролем (регистр важен) или пришли ссылку кнопкой «Пригласить».</div>';
 }
 
@@ -314,7 +314,7 @@ function peerRowHTML(p, sigs) {
   const dots = '<span class="sigdots" title="через какие сигналки виден узел">' + dotsHTML(sigs, p.signals || []) + '</span>';
   return '<div class="peer" title="' + st[1] + esc(seen) + '">' +
     '<span class="pdot ' + st[0] + '"></span>' +
-    '<span class="pname">' + esc(p.name || "узел") + '</span>' +
+    '<span class="pname">' + dispName(p.name || "узел") + '</span>' +
     '<span class="pip">' + esc(p.vip) + '</span>' +
     '<span style="flex:1"></span>' +
     dots +
@@ -322,7 +322,11 @@ function peerRowHTML(p, sigs) {
     '<button class="copy" data-ip="' + esc(p.vip) + '" title="скопировать IP">⧉</button>' +
   '</div>';
 }
-function esc(s){ return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// Имена пиров/сетей приходят от других участников. Помимо HTML-экранирования чистим
+// управляющие, bidi-override и zero-width символы: иначе именем можно визуально
+// подделать другой узел (U+202E разворачивает текст) или спрятать символы.
+function dispName(s){ return esc(String(s).replace(/[\u0000-\u001F\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")); }
 
 
 async function poll() {
@@ -346,7 +350,7 @@ $("#addBtn").onclick = async () => {
   // Серверы из приглашения прикладываем, только если инвайт относится к этой сети.
   const body = { network:name, password:pass };
   const inv = parseInvite($("#invite").value);
-  if ($("#invite").value.trim() && inv.net === name) {
+  if ($("#invite").value.trim() && (inv.net || "").trim() === name) {
     if (inv.sigs.length) body.signals = inv.sigs;
     if (inv.relay !== null) body.relay = inv.relay;
   }
@@ -437,7 +441,11 @@ function parseInvite(text) {
     const eq = part.indexOf("=");
     if (eq < 0) continue;
     const k = part.slice(0, eq);
-    const v = decodeURIComponent(part.slice(eq + 1).replace(/\+/g, " "));
+    // Битая %-последовательность в вставленном тексте не должна ронять обработчик
+    // (иначе кнопка «Добавить сеть» залипала бы disabled) — считаем поле нераспознанным.
+    let v;
+    try { v = decodeURIComponent(part.slice(eq + 1).replace(/\+/g, " ")); }
+    catch (e) { continue; }
     if (k === "net") net = v;
     else if (k === "pass") pass = v;
     else if (k === "sig") sigs.push(v);

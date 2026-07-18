@@ -12,6 +12,15 @@ import (
 // stunTimeout — сколько ждём ответа STUN. Общий для одиночного и группового опроса.
 const stunTimeout = 3 * time.Second
 
+// isTimeout — истёк ли дедлайн чтения (пора выходить), в отличие от прочих ошибок
+// сокета. На Windows недоставленный по недоступному STUN-серверу пакет прилетает
+// назад как ICMP Port Unreachable, и следующий recvfrom на том же сокете отдаёт
+// WSAECONNRESET — это НЕ таймаут: другие серверы ещё могут ответить, читаем дальше.
+func isTimeout(err error) bool {
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
+}
+
 // DefaultSTUNServers — серверы для определения внешнего адреса.
 //
 // Список намеренно РАЗНОРОДНЫЙ: у одного оператора (или в одном домене, как
@@ -72,7 +81,10 @@ func DiscoverEndpointAny(conn *net.UDPConn, servers []string) (endpoint, via str
 	for time.Now().Before(deadline) {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			break // таймаут чтения — дальше ждать нечего
+			if isTimeout(err) {
+				break // дедлайн — дальше ждать нечего
+			}
+			continue // ICMP-отлуп по одному серверу — остальные ещё могут ответить
 		}
 		for _, p := range sent {
 			if ip, port, ok := parseXorMappedAddress(buf[:n], p.txID[:]); ok {
@@ -152,7 +164,10 @@ func ProbeNAT(servers []string) NATResult {
 	for time.Now().Before(deadline) && len(ports) < len(sent) {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			break
+			if isTimeout(err) {
+				break
+			}
+			continue
 		}
 		for _, p := range sent {
 			if ip, port, ok := parseXorMappedAddress(buf[:n], p.txID[:]); ok {
@@ -239,7 +254,10 @@ func DiscoverEndpoint(conn *net.UDPConn, server string) (string, error) {
 	for time.Now().Before(deadline) {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			return "", err
+			if isTimeout(err) {
+				return "", err
+			}
+			continue // ICMP-отлуп/чужой пакет — читаем дальше до дедлайна
 		}
 		if ip, port, ok := parseXorMappedAddress(buf[:n], tx[:]); ok {
 			return net.JoinHostPort(ip.String(), itoa(port)), nil
@@ -249,10 +267,16 @@ func DiscoverEndpoint(conn *net.UDPConn, server string) (string, error) {
 	return "", errors.New("stun: таймаут ответа")
 }
 
-// parseXorMappedAddress достаёт XOR-MAPPED-ADDRESS (0x0020) из STUN-ответа,
-// проверяя, что это ответ на наш запрос (совпадает transaction id).
+// parseXorMappedAddress достаёт наш внешний адрес из STUN-ответа. Понимает и
+// XOR-MAPPED-ADDRESS (0x0020, RFC 5389), и легаси MAPPED-ADDRESS (0x0001, RFC 3489
+// без XOR) — часть старых публичных серверов из пула отвечает только вторым.
+// Проверяет, что это Binding Success на НАШ запрос: совпадает transaction id и на
+// месте magic cookie стоит константа 0x2112A442 (мы её шлём, сервер эхом возвращает).
 func parseXorMappedAddress(msg, txID []byte) (net.IP, int, bool) {
 	if len(msg) < 20 || binary.BigEndian.Uint16(msg[0:]) != 0x0101 { // Binding Success
+		return nil, 0, false
+	}
+	if binary.BigEndian.Uint32(msg[4:8]) != 0x2112A442 { // magic cookie — не наш/битый ответ
 		return nil, 0, false
 	}
 	if string(msg[8:20]) != string(txID) {
@@ -267,18 +291,28 @@ func parseXorMappedAddress(msg, txID []byte) (net.IP, int, bool) {
 			break
 		}
 		val := attrs[4 : 4+alen]
-		if typ == 0x0020 && len(val) >= 8 && val[1] == 0x01 { // XOR-MAPPED, family IPv4
+		switch {
+		case typ == 0x0020 && len(val) >= 8 && val[1] == 0x01: // XOR-MAPPED, IPv4
 			port := int(binary.BigEndian.Uint16(val[2:]) ^ 0x2112)
 			ip := make(net.IP, 4)
 			for i := 0; i < 4; i++ {
 				ip[i] = val[4+i] ^ cookie[i]
 			}
 			return ip, port, true
+		case typ == 0x0001 && len(val) >= 8 && val[1] == 0x01: // легаси MAPPED, IPv4 (без XOR)
+			port := int(binary.BigEndian.Uint16(val[2:]))
+			ip := make(net.IP, 4)
+			copy(ip, val[4:8])
+			return ip, port, true
 		}
-		// атрибуты выровнены по 4 байта
+		// атрибуты выровнены по 4 байта; после округления вверх могло не остаться
+		// паддинг-байтов (последний атрибут длиной не кратной 4) — не режем за границу.
 		adv := 4 + alen
 		if pad := alen % 4; pad != 0 {
 			adv += 4 - pad
+		}
+		if adv > len(attrs) {
+			break
 		}
 		attrs = attrs[adv:]
 	}
