@@ -163,7 +163,7 @@
         <button id="cfgSave" class="btn-primary" style="margin:0">Сохранить</button>
         <button id="cfgReset" class="btn-ghost">Сбросить к стандартным</button>
       </div>
-      <div class="hint" id="cfgNote" style="margin-left:0">Пустые поля = стандартные сервера. Менять можно, только когда узел снят — жми «Отключиться» вверху.</div>
+      <div class="hint" id="cfgNote" style="margin-left:0">Текущий список подставлен — правь его целиком. «Сохранить» ЗАМЕНЯЕТ список, а не добавляет. Менять можно, только когда узел снят — жми «Отключиться» вверху.</div>
     </div>
   </div>
 
@@ -485,7 +485,7 @@ $("#invite").addEventListener("input", () => {
 });
 
 // --- настройки серверов ----------------------------------------------------
-const defaultCfgNote = "Адреса настроенных серверов скрыты. Впиши свои, чтобы переопределить; пусто = оставить как есть. Менять можно, только когда узел снят — жми «Отключиться» вверху.";
+const defaultCfgNote = "Показан текущий список серверов — правь его целиком (сигналки по одной на строку). «Сохранить» ЗАМЕНЯЕТ список, а не добавляет. Менять можно, только когда узел снят — жми «Отключиться» вверху.";
 let settingsLoaded = false;
 
 function setSettingsEditable(ok) {
@@ -498,12 +498,13 @@ function setSettingsEditable(ok) {
 async function loadSettings() {
   try {
     const s = await (await fetch("/api/settings")).json();
-    // Реальные адреса НЕ показываем — только сколько настроено. Поля пустые: их
-    // заполняют, только если хотят задать свои серверы.
-    $("#cfgSignals").value = "";
-    $("#cfgRelay").value = "";
+    // Подставляем ТЕКУЩИЙ список — правишь видимое, а не вслепую (иначе одна
+    // вписанная строка затирала весь список, схлопывая его до одной сигналки).
+    const sigs = s.signals || [];
+    $("#cfgSignals").value = sigs.join("\n");
+    $("#cfgRelay").value = s.relay || "";
     $("#settingsHint").textContent = (s.custom ? "свои" : "стандартные") +
-      " · " + (s.signalCount || 0) + " сигналок" + (s.hasRelay ? " + релей" : "");
+      " · " + sigs.length + " сигналок" + (s.relay ? " + релей" : "");
     settingsLoaded = true;
   } catch(e) { /* оставим поля как есть */ }
 }
@@ -528,7 +529,7 @@ $("#cfgSave").onclick = async () => {
     const r = await fetch("/api/settings", { method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({ signals, relay }) });
     const j = await r.json();
-    if (r.ok) { note.textContent = "Сохранено."; $("#cfgSignals").value=""; $("#cfgRelay").value=""; settingsLoaded = false; loadSettings(); }
+    if (r.ok) { note.textContent = "Сохранено."; settingsLoaded = false; loadSettings(); }
     else note.textContent = "Ошибка: " + (j.error || r.status);
   } catch(e) { note.textContent = "Ошибка: " + e.message; }
 };
