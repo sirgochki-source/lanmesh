@@ -301,9 +301,9 @@ function dotsHTML(sigMeta, presence) {
   sigMeta = sigMeta || [];
   return sigMeta.map((s, i) => {
     let cls = "sigdot", tip;
-    // Адрес сигналки НЕ показываем — нейтральная метка по номеру, чтобы личные
-    // домены не светились в тултипах.
-    const label = "сигналка " + (i + 1);
+    // Показываем адрес сигналки в тултипе (наведение по индикатору); если host почему-то
+    // не пришёл — падаем на нейтральную метку по номеру.
+    const label = s.host || ("сигналка " + (i + 1));
     if (!s.up) { cls += " down"; tip = label + " — недоступна тебе"; }
     else if (presence) {
       if (presence[i]) { cls += " on"; tip = label + " — участник виден здесь"; }
