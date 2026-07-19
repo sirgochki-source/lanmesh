@@ -3,7 +3,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,45 +15,39 @@ import (
 )
 
 // version — текущая версия сборки. Бампается вручную под каждый релиз (совпадает с git-тегом).
-const version = "v0.5.1"
+const version = "v0.5.2"
 
-const githubLatestAPI = "https://api.github.com/repos/sirgochki-source/lanmesh/releases/latest"
+// Обновление тянем через ОБЫЧНЫЙ github.com, а НЕ api.github.com: у API жёсткий лимит
+// 60 запросов/час на IP (за CGNAT — общий на всех, отсюда 403). Страница /releases/latest
+// редиректит на /releases/tag/<тег> — тег берём из редиректа; ассет — по стабильному URL
+// /releases/latest/download/<имя>. И то, и другое — не API, лимитов практически нет.
+const (
+	githubLatestURL = "https://github.com/sirgochki-source/lanmesh/releases/latest"
+	githubAssetURL  = "https://github.com/sirgochki-source/lanmesh/releases/latest/download/lanmesh-gui.exe"
+)
 
-// ghRelease — нужные поля ответа GitHub releases/latest.
-type ghRelease struct {
-	TagName string `json:"tag_name"`
-	Name    string `json:"name"`
-	Assets  []struct {
-		Name string `json:"name"`
-		URL  string `json:"browser_download_url"`
-	} `json:"assets"`
-}
-
-// latestRelease тянет последний релиз с GitHub и возвращает его + URL ассета lanmesh-gui.exe.
-func latestRelease() (*ghRelease, string, error) {
-	req, _ := http.NewRequest("GET", githubLatestAPI, nil)
-	req.Header.Set("Accept", "application/vnd.github+json")
+// latestTag возвращает тег последнего релиза, читая Location редиректа /releases/latest.
+func latestTag() (string, error) {
+	cl := &http.Client{
+		Timeout:       15 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	req, _ := http.NewRequest("GET", githubLatestURL, nil)
 	req.Header.Set("User-Agent", "lanmesh-gui")
-	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	resp, err := cl.Do(req)
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("GitHub API: %s", resp.Status)
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return "", fmt.Errorf("нет релизов (HTTP %d)", resp.StatusCode)
 	}
-	var rel ghRelease
-	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
-		return nil, "", err
+	i := strings.LastIndex(loc, "/tag/")
+	if i < 0 {
+		return "", fmt.Errorf("не удалось разобрать тег")
 	}
-	var asset string
-	for _, a := range rel.Assets {
-		if a.Name == "lanmesh-gui.exe" {
-			asset = a.URL
-			break
-		}
-	}
-	return &rel, asset, nil
+	return strings.TrimSpace(loc[i+len("/tag/"):]), nil
 }
 
 // parseVer разбирает "vMAJOR.MINOR.PATCH" в [3]int (нецифровой хвост октета отбрасывается).
@@ -87,31 +80,30 @@ func isNewer(current, latest string) bool {
 
 // handleCheckUpdate: GET — сравнивает текущую версию с последним релизом GitHub.
 func handleCheckUpdate(w http.ResponseWriter, r *http.Request) {
-	rel, asset, err := latestRelease()
+	latest, err := latestTag()
 	if err != nil {
 		writeJSON(w, map[string]string{"error": "не удалось проверить: " + err.Error()}, http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, map[string]any{
 		"current":   version,
-		"latest":    rel.TagName,
-		"name":      rel.Name,
-		"hasUpdate": asset != "" && isNewer(version, rel.TagName),
+		"latest":    latest,
+		"hasUpdate": isNewer(version, latest),
 	}, http.StatusOK)
 }
 
 // handleUpdate: POST — скачивает новый lanmesh-gui.exe, заменяет текущий и перезапускается.
 func handleUpdate(w http.ResponseWriter, r *http.Request) {
-	rel, asset, err := latestRelease()
-	if err != nil || asset == "" {
-		writeJSON(w, map[string]string{"error": "нет доступного обновления"}, http.StatusBadGateway)
+	latest, err := latestTag()
+	if err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()}, http.StatusBadGateway)
 		return
 	}
-	if !isNewer(version, rel.TagName) {
+	if !isNewer(version, latest) {
 		writeJSON(w, map[string]bool{"ok": true, "upToDate": true}, http.StatusOK)
 		return
 	}
-	if err := selfUpdate(asset); err != nil {
+	if err := selfUpdate(); err != nil {
 		writeJSON(w, map[string]string{"error": err.Error()}, http.StatusInternalServerError)
 		return
 	}
@@ -125,14 +117,14 @@ func handleUpdate(w http.ResponseWriter, r *http.Request) {
 // selfUpdate скачивает новый exe рядом с текущим и переставляет его на место. Windows
 // позволяет ПЕРЕИМЕНОВАТЬ запущенный exe (но не перезаписать/удалить), поэтому текущий
 // уводим в .old, а скачанный ставим на его путь. .old чистится на следующем старте.
-func selfUpdate(assetURL string) error {
+func selfUpdate() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	exe, _ = filepath.Abs(exe)
 
-	req, _ := http.NewRequest("GET", assetURL, nil)
+	req, _ := http.NewRequest("GET", githubAssetURL, nil)
 	req.Header.Set("User-Agent", "lanmesh-gui")
 	resp, err := (&http.Client{Timeout: 5 * time.Minute}).Do(req)
 	if err != nil {
@@ -172,7 +164,6 @@ func selfUpdate(assetURL string) error {
 func restartAfterUpdate() {
 	exe, _ := os.Executable()
 	exe, _ = filepath.Abs(exe)
-	// Detached PowerShell: ждёт ~2с и запускает новый exe (тот сам поднимет UAC при старте).
 	exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command",
 		"Start-Sleep -Seconds 2; Start-Process -FilePath '"+exe+"'").Start()
 	time.Sleep(400 * time.Millisecond) // дать ответу дойти до панели
