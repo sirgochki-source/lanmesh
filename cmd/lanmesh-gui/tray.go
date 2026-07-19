@@ -3,14 +3,9 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
+	_ "embed"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"log"
-	"math"
 	"runtime"
 	"time"
 
@@ -24,12 +19,14 @@ import (
 // умеет добавлять/удалять пункты на лету, поэтому слоты создаём заранее и прячем лишние.
 const maxPeerSlots = 8
 
-// Иконки статуса — цветной кружок, генерим в рантайме (dotICO), чтобы не таскать
-// бинарные ассеты. Цвета в тон панели: серый/жёлтый/зелёный.
+// Иконки трея — логотип-соты в цвете статуса (прозрачный фон): серый/жёлтый/зелёный.
 var (
-	iconOff  = dotICO(0x8b, 0x95, 0xa5) // серый — не подключено
-	iconWarn = dotICO(0xe9, 0xb9, 0x49) // жёлтый — ограничено
-	iconOn   = dotICO(0x35, 0xc6, 0x6b) // зелёный — в сети
+	//go:embed tray-off.ico
+	iconOff []byte // серый — не подключено
+	//go:embed tray-warn.ico
+	iconWarn []byte // жёлтый — ограничено
+	//go:embed tray-on.ico
+	iconOn []byte // зелёный — в сети
 )
 
 // startTray поднимает иконку lanmesh в системном трее на ОТДЕЛЬНОМ залоченном
@@ -193,49 +190,4 @@ func peerLine(p peer.PeerView) string {
 		return fmt.Sprintf("  %s · %s · %s", name, rtt, path)
 	}
 	return fmt.Sprintf("  %s · %s", name, path)
-}
-
-// dotICO рисует залитый кружок заданного цвета и заворачивает его в .ico (PNG внутри
-// ICO — Windows Vista+ это понимает). Возвращает готовые байты для systray.SetIcon.
-func dotICO(r, g, b uint8) []byte {
-	const s = 32
-	img := image.NewNRGBA(image.Rect(0, 0, s, s))
-	cx, cy, rad := float64(s)/2, float64(s)/2, float64(s)/2-2
-	for y := 0; y < s; y++ {
-		for x := 0; x < s; x++ {
-			dx, dy := float64(x)+0.5-cx, float64(y)+0.5-cy
-			d := math.Sqrt(dx*dx + dy*dy)
-			var a float64
-			switch {
-			case d <= rad-1:
-				a = 1
-			case d < rad+1:
-				a = (rad + 1 - d) / 2 // мягкий край, чтобы не был лесенкой
-			}
-			if a > 0 {
-				img.SetNRGBA(x, y, color.NRGBA{R: r, G: g, B: b, A: uint8(a * 255)})
-			}
-		}
-	}
-
-	var pngBuf bytes.Buffer
-	if err := png.Encode(&pngBuf, img); err != nil {
-		return nil
-	}
-	p := pngBuf.Bytes()
-
-	var ico bytes.Buffer
-	binary.Write(&ico, binary.LittleEndian, uint16(0))      // reserved
-	binary.Write(&ico, binary.LittleEndian, uint16(1))      // type = icon
-	binary.Write(&ico, binary.LittleEndian, uint16(1))      // число картинок
-	ico.WriteByte(s)                                        // ширина
-	ico.WriteByte(s)                                        // высота
-	ico.WriteByte(0)                                        // палитра (0 = truecolor)
-	ico.WriteByte(0)                                        // reserved
-	binary.Write(&ico, binary.LittleEndian, uint16(1))      // плоскостей
-	binary.Write(&ico, binary.LittleEndian, uint16(32))     // бит на пиксель
-	binary.Write(&ico, binary.LittleEndian, uint32(len(p))) // размер картинки
-	binary.Write(&ico, binary.LittleEndian, uint32(22))     // смещение = 6+16
-	ico.Write(p)
-	return ico.Bytes()
 }

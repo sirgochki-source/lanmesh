@@ -254,6 +254,7 @@ func main() {
 	// нативной рамкой по краям; перетаскивание — через мост lmDrag.
 	installFrame(uintptr(w.Window()))
 	makeFrameless(uintptr(w.Window()))
+	setWindowIcon(uintptr(w.Window())) // иконка окна на таскбаре/Alt-Tab из ресурса exe
 
 	// Иконка в системном трее + меню (Открыть окно / Выход) — на отдельном
 	// залоченном OS-потоке, чтобы её message-loop не конфликтовал с главным
@@ -302,7 +303,31 @@ var (
 	procSetWindowPos     = user32.NewProc("SetWindowPos")
 	procSendMessage      = user32.NewProc("SendMessageW")
 	procReleaseCapture   = user32.NewProc("ReleaseCapture")
+	procExtractIconEx    = windows.NewLazySystemDLL("shell32.dll").NewProc("ExtractIconExW")
 )
+
+// setWindowIcon ставит окну иконку из ресурсов самого exe (её же видит проводник) —
+// иначе окно WebView2 не подхватывает её, и на таскбаре/в Alt-Tab пусто. ExtractIconEx
+// достаёт первую иконку exe по индексу 0 (не нужно знать resource ID).
+func setWindowIcon(hwnd uintptr) {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	p, err := windows.UTF16PtrFromString(exe)
+	if err != nil {
+		return
+	}
+	var big, small uintptr
+	procExtractIconEx.Call(uintptr(unsafe.Pointer(p)), 0, uintptr(unsafe.Pointer(&big)), uintptr(unsafe.Pointer(&small)), 1)
+	const wmSetIcon = 0x0080
+	if big != 0 {
+		procSendMessage.Call(hwnd, wmSetIcon, 1, big) // ICON_BIG
+	}
+	if small != 0 {
+		procSendMessage.Call(hwnd, wmSetIcon, 0, small) // ICON_SMALL
+	}
+}
 
 // showExisting поднимает окно уже запущенного экземпляра lanmesh (по заголовку) —
 // на случай, когда его окно свёрнуто в трей, а пользователь снова кликнул по exe.
