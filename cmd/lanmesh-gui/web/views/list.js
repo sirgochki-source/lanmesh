@@ -39,9 +39,10 @@ function cmpVip(a, b) {
   return 0;
 }
 
-export function peerRowCompact(peer) {
+export function peerRowCompact(peer, netSignals = []) {
   return `<div class="row"><span class="sdot ${sdotCls(peer.status)}"></span>`
     + `<span class="nm">${dispName(peer.name || 'узел')}</span><span class="grow"></span>`
+    + `${peerSignalDots(peer.signals, netSignals)}`
     + `<span class="ip mono copyable" data-copy="${esc(peer.vip)}" title="скопировать IP">${esc(peer.vip)}</span>${pngHtml(peer)}</div>`;
 }
 
@@ -56,7 +57,7 @@ export function netCardCompact(net) {
   }
   const peers = (net.peers || []).slice().sort(cmpVip);
   const body = peers.length
-    ? peers.map(peerRowCompact).join('')
+    ? peers.map(p => peerRowCompact(p, net.signals)).join('')
     : `<div class="empty">Пока никого. Позови друга в сеть <b>${dispName(net.name)}</b> с тем же паролем или пришли ссылку кнопкой «Пригласить».</div>`;
   // Индикатор сигналок по каждому серверу; запасной единичный эмодзи — если бэкенд
   // не прислал список серверов (старое состояние без net.signals).

@@ -37,6 +37,13 @@ test('peerRowCompact окрашивает пинг по порогам rttClass'
   assert.match(peerRowCompact({ name: 'a', vip: '1', status: 'direct', rttMs: 200 }), /png rtt-bad/);
 });
 
+test('peerRowCompact: точки сигналок пира (через какие серверы виден) по net.signals', () => {
+  const s = peerRowCompact({ name: 'A', vip: '1', status: 'direct', rttMs: 10, signals: [true, false] }, [{ host: 'eu-1' }, { host: 'us-1' }]);
+  assert.match(s, /class="sig up"/);
+  assert.match(s, /class="sig off"/);
+  assert.match(s, /eu-1: виден/);
+});
+
 test('netCardCompact: заголовок, счётчик, кнопки, точка сигналки', () => {
   const s = netCardCompact({ name: 'myteam', tag: 'tag123', signalError: '', peers: [
     { name: 'A', vip: '25.0.0.2', status: 'direct', rttMs: 10 },
