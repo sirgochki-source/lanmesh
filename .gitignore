@@ -37,3 +37,5 @@ docs/*.pdf
 
 # служебные файлы subagent-driven-development (брифы/отчёты/ledger)
 .superpowers/
+smokerun/
+quittest/

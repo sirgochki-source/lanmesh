@@ -437,8 +437,11 @@ func startTray(w webview2.WebView) {
 							procSetForeground.Call(hwnd)
 						})
 					case <-mQuit.ClickedCh:
-						w.Terminate() // разблокирует w.Run() в main → корректное завершение
-						systray.Quit()
+						// Terminate() = PostQuitMessage(0) — кладёт WM_QUIT в очередь ВЫЗЫВАЮЩЕГО
+						// потока. Отсюда (поток трея) он ушёл бы мимо w.Run(), и процесс бы висел.
+						// Dispatch выполняет Terminate в главном потоке → WM_QUIT попадает в цикл
+						// w.Run(), тот возвращается, main завершается.
+						w.Dispatch(func() { w.Terminate() })
 						return
 					}
 				}

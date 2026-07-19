@@ -212,6 +212,10 @@ document.addEventListener('mousedown', (e) => {
 // кнопки окна (свернуть/закрыть). В браузере/mock их нет.
 if (window.lmWindow) document.documentElement.classList.add('native');
 setMode(mode);
+// Синхронизируем размер нативного окна с начальным режимом: окно создаётся широким
+// (под подробный), поэтому при сохранённом компактном режиме его надо сразу сузить —
+// иначе компакт открывается в ширину подробного.
+if (window.lmResize) window.lmResize(mode);
 poll();
 setInterval(poll, POLL_MS);
 
