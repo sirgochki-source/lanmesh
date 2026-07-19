@@ -85,15 +85,19 @@ export function renderCompact(state, view = 'list') {
   return warn + self + cards + addFormHtml(nets.length === 0);
 }
 
-// Форма добавления сети — раскрыта, пока сетей нет (поведение из старого UI).
-export function addFormHtml(open) {
-  return `<div class="netcard addcard"><div class="add-toggle" data-act="add-toggle">＋ Добавить сеть</div>`
-    + `<div class="add-body" ${open ? '' : 'hidden'}>`
-    + `<input id="f-invite" placeholder="lanmesh://join?net=…&pass=…" autocomplete="off">`
+// Поля формы добавления сети — общие для компактной карточки и подробного вида.
+export function addFormFields() {
+  return `<input id="f-invite" placeholder="lanmesh://join?net=…&pass=…" autocomplete="off">`
     + `<div class="frow"><input id="f-net" placeholder="имя сети" autocomplete="off">`
     + `<input id="f-pass" type="password" placeholder="пароль" autocomplete="off"></div>`
     + `<button class="btn-primary" data-act="add">Добавить сеть</button>`
-    + `<div id="add-err" class="hint" hidden></div></div></div>`;
+    + `<div id="add-err" class="hint" hidden></div>`;
+}
+
+// Форма добавления сети (компактная карточка) — раскрыта, пока сетей нет.
+export function addFormHtml(open) {
+  return `<div class="netcard addcard"><div class="add-toggle" data-act="add-toggle">＋ Добавить сеть</div>`
+    + `<div class="add-body" ${open ? '' : 'hidden'}>${addFormFields()}</div></div>`;
 }
 
 // Диспетчер видов. history в compact не нужна — только detailed (спарклайн).
@@ -149,11 +153,19 @@ export function qualityTile(net) {
 
 const soon = (text) => `<div class="dmain"><div class="soon">${text}</div></div>`;
 
+// Вид «Добавить сеть» в подробном режиме (вход через пункт рейла «＋ Добавить сеть»).
+export function renderAddNet() {
+  return `<div class="dmain"><div class="dhd"><div class="title">Добавить сеть</div></div>`
+    + `<div class="hint">Введи имя и пароль (или вставь ссылку-приглашение), чтобы войти в существующую сеть или создать новую.</div>`
+    + addFormFields() + `</div>`;
+}
+
 export function renderDetailed(state, view, histories = {}, activeNetTag, rates = {}) {
   const nets = displayNets(state); // включает сохранённые-неактивные (после отключения)
   const net = nets.find(n => n.tag === activeNetTag) || nets[0];
+  if (view === 'add') return renderAddNet();
   if (view === 'settings') return renderSettings(state);
-  if (!net) return soon('Нет сохранённых сетей. Добавь сеть в компактном режиме.');
+  if (!net) return renderAddNet(); // сетей нет — сразу форма добавления, а не подсказка
   // Неактивная (отключённая) сеть: серый заголовок «отключено» + подсказка подключиться,
   // без плиток и участников. Раньше traffic ожидает реальную сеть — проверяем ДО него.
   if (net.inactive) {

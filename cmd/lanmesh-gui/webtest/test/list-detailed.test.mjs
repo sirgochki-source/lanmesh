@@ -68,9 +68,17 @@ test('renderDetailed traffic — делегирует в renderTraffic (Phase 3,
   assert.match(s, />A</);
 });
 
-test('renderDetailed traffic — без активных сетей ведёт себя как остальные виды (подсказка, не падает)', () => {
+test('renderDetailed: без сетей — форма добавления (а не заглушка), не падает', () => {
   const st = { running: true, selfEndpoint: 'x', networks: [] };
-  assert.match(renderDetailed(st, 'traffic', {}), /Нет сохранённых сетей/);
+  assert.match(renderDetailed(st, 'traffic', {}), /id="f-net"/);
+});
+
+test('renderDetailed: вид add — форма добавления сети (имя, пароль, кнопка)', () => {
+  const st = { running: true, selfEndpoint: 'x', networks: [{ name: 'n', tag: 't', signals: [], peers: [] }] };
+  const s = renderDetailed(st, 'add', {});
+  assert.match(s, /id="f-net"/);
+  assert.match(s, /id="f-pass"/);
+  assert.match(s, /Добавить сеть/);
 });
 
 test('renderDetailed settings — делегирует в renderSettings (Task 13)', () => {
@@ -123,9 +131,9 @@ test('renderDetailed list: плитка «Трафик» без данных —
   assert.match(s, /0 Б/);
 });
 
-test('renderDetailed list: без активных сетей — подсказка, не падает', () => {
+test('renderDetailed list: без сетей — сразу форма добавления', () => {
   const st = { running: true, selfEndpoint: 'x', networks: [] };
-  assert.match(renderDetailed(st, 'list', {}), /Нет сохранённых сетей/);
+  assert.match(renderDetailed(st, 'list', {}), /id="f-net"/);
 });
 
 test('renderDetailed: неактивная (отключённая) сеть — серый заголовок + подсказка подключиться', () => {

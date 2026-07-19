@@ -40,8 +40,8 @@ export function renderSettings(state) {
 // Компактный режим — отдельный экран настроек с кнопкой возврата к списку
 // (в компакте нет рейла с навигацией, вход — через ⚙ в шапке).
 export function renderSettingsCompact(state) {
+  // Возврат к списку — повторным нажатием ⚙ в шапке (не отдельной кнопкой).
   return `<div class="cfg-compact"><div class="cfg-compact-hd">`
-    + `<button class="btn-ghost" data-act="show-list">← Список</button>`
     + `<span class="cfg-compact-title">Настройки</span></div>`
     + settingsBody(state) + `</div>`;
 }

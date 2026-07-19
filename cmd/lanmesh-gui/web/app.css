@@ -167,6 +167,8 @@ button.iconbtn {
 }
 button.iconbtn:hover { background: rgba(255,255,255,.09); color: var(--fg); }
 button.iconbtn:active { background: rgba(255,255,255,.12); }
+button.iconbtn.gear { font-size: 15px; }  /* шестерёнку немного крупнее остальных иконок */
+button.iconbtn.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }  /* активна (настройки открыты) */
 
 /* ---------- кнопка Отключиться / Подключиться ---------- */
 .conn-btn {
@@ -224,6 +226,10 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
 .netitem.on { background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent-fg); }
 .netitem .pdot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .netitem .cnt { margin-left: auto; font-size: 10.5px; color: var(--fg-mut); }
+/* пункт «＋ Добавить сеть» в рейле — приглушённый, акцент на hover/активном */
+.netitem.add { color: var(--fg-mut); font-weight: 600; margin-top: 2px; }
+.netitem.add:hover { color: var(--accent); background: var(--accent-soft); }
+.netitem.add.on { color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent-line); }
 
 .nav { margin-top: 12px; display: flex; flex-direction: column; gap: 3px; }
 .nav .n {

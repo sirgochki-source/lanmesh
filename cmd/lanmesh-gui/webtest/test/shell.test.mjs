@@ -43,6 +43,17 @@ test('renderHeader: содержит кнопку подключения по с
   assert.match(renderHeader({ running: false, savedNetworks: 1, networks: [] }, 'detailed'), /data-act="reconnect"/);
 });
 
+test('renderHeader: ⚙ активна (класс on) и подпись «Назад к списку» когда открыты настройки', () => {
+  const h = renderHeader({ running: true, selfEndpoint: 'x', networks: [] }, 'compact', 'settings');
+  assert.match(h, /iconbtn gear on/);
+  assert.match(h, /Назад к списку/);
+});
+test('renderRail: содержит пункт «＋ Добавить сеть» (data-view=add)', () => {
+  const html = renderRail({ networks: [{ tag: 'a', name: 'A', peers: [] }] }, 'list', 'a');
+  assert.match(html, /data-view="add"/);
+  assert.match(html, /Добавить сеть/);
+});
+
 test('displayNets: сохранённая, но не активная сеть → inactive-заглушка', () => {
   const out = displayNets({ networks: [{ tag: 'a', name: 'Alpha', peers: [] }], savedNets: [{ tag: 'a', name: 'Alpha' }, { tag: 'b', name: 'Beta' }] });
   assert.equal(out.length, 2);

@@ -67,10 +67,12 @@ export function renderThemePopover(current) {
   return `<div class="theme-pop-hd">Тема оформления</div><div class="theme-grid">${chips}</div>`;
 }
 
-export function renderHeader(state, mode) {
+export function renderHeader(state, mode, activeView = 'list') {
   const p = statusPill(state);
   const conn = connBtn(state);
   const theme = themeBtn();
+  // ⚙ работает как переключатель: открыть настройки / вернуться к списку. В настройках — подсвечена.
+  const gear = `<button class="iconbtn gear ${activeView === 'settings' ? 'on' : ''}" data-act="show-settings" title="${activeView === 'settings' ? 'Назад к списку' : 'Настройки'}">⚙</button>`;
   // Кнопки своей рамки (frameless-окно) — видны только в нативном приложении
   // (класс .native на <html>), в браузере/mock скрыты. Свернуть / закрыть-в-трей.
   const win = `<button class="wbtn" data-win="minimize" title="Свернуть">–</button>`
@@ -84,7 +86,7 @@ export function renderHeader(state, mode) {
   }
   return `<div class="hd"><span class="wm">lan<b>mesh</b></span><span class="grow"></span>`
     + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>${conn}${theme}`
-    + `<button class="iconbtn" data-act="show-settings" title="Настройки">⚙</button>`
+    + gear
     + `<button class="iconbtn" data-act="expand" title="Подробный режим">⤢</button>`
     + win + `</div>`;
 }
@@ -97,7 +99,9 @@ export function renderRail(state, activeView, activeNetTag) {
   const netsHtml = nets.map(n =>
     `<div class="netitem ${n.tag === activeTag ? 'on' : ''}${n.inactive ? ' off' : ''}" data-view="list" data-net="${esc(n.tag)}"><span class="pdot"></span>${escName(n.name)}`
     + `<span class="cnt">${n.inactive ? '' : (n.peers || []).length}</span></div>`).join('');
+  // Пункт «＋ Добавить сеть» под списком сетей — в подробном режиме иначе сеть не добавить.
+  const addItem = `<div class="netitem add ${activeView === 'add' ? 'on' : ''}" data-view="add">＋ Добавить сеть</div>`;
   const nav = [['list', '▤', 'Список'], ['traffic', '▮', 'Трафик'], ['settings', '⚙', 'Настройки']]
     .map(([v, ic, t]) => `<div class="n ${v === activeView ? 'on' : ''}" data-view="${v}">${ic}&nbsp; ${t}</div>`).join('');
-  return `<div class="rail"><div class="brand">lan<b>mesh</b></div>${netsHtml}<div class="nav">${nav}</div></div>`;
+  return `<div class="rail"><div class="brand">lan<b>mesh</b></div>${netsHtml}${addItem}<div class="nav">${nav}</div></div>`;
 }

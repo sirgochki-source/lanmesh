@@ -82,12 +82,12 @@ function setMode(m) { mode = m; document.getElementById('root').dataset.mode = m
 // сети/настроек), #view НЕ перерисовываем — иначе опрос стирал бы вводимый текст и фокус.
 function render(state, fromPoll = false) {
   lastState = state;
-  document.getElementById('header').innerHTML = renderHeader(state, mode);
+  document.getElementById('header').innerHTML = renderHeader(state, mode, activeView);
   document.getElementById('rail').innerHTML = mode === 'detailed' ? renderRail(state, activeView, activeNetTag) : '';
   const viewEl = document.getElementById('view');
-  if (fromPoll && (activeView === 'settings' || viewEl.contains(document.activeElement))) {
-    // пропускаем: настройки — редактируемая форма (список серверов), опрос не должен
-    // стирать добавленные/удалённые строки и введённый текст; либо пользователь печатает
+  if (fromPoll && (activeView === 'settings' || activeView === 'add' || viewEl.contains(document.activeElement))) {
+    // пропускаем: настройки/добавление — редактируемые формы, опрос не должен стирать
+    // введённый текст (сервера, имя сети, пароль); либо пользователь печатает в #view
   } else if (window.renderView) {
     viewEl.innerHTML = window.renderView(state, mode, activeView, histSnapshot(), activeNetTag, ratesSnapshot());
   }
@@ -112,7 +112,8 @@ document.addEventListener('click', (e) => {
   if (act === 'collapse') { manual = true; localStorage.setItem('lm-mode', 'compact'); setMode('compact'); window.lmResize && window.lmResize('compact'); render(lastState); return; }
   // ⚙ в компактной шапке -> экран настроек; «← Список» -> назад. activeView живёт
   // как модульное состояние (как в detailed), поэтому переживает опросы.
-  if (act === 'show-settings') { activeView = 'settings'; render(lastState); return; }
+  // ⚙ — переключатель: настройки ↔ список (повторный клик по шестерёнке возвращает).
+  if (act === 'show-settings') { activeView = activeView === 'settings' ? 'list' : 'settings'; render(lastState); return; }
   if (act === 'show-list') { activeView = 'list'; render(lastState); return; }
   // Кнопки своей рамки окна (нативное приложение): свернуть / закрыть-в-трей.
   const win = e.target.closest('[data-win]')?.dataset.win;
@@ -179,7 +180,8 @@ document.addEventListener('click', async (e) => {
     const body = { network: net, password: pass };
     if ((inv.net || '').trim() === net) { if (inv.sigs.length) body.signals = inv.sigs; if (inv.relay !== null) body.relay = inv.relay; }
     const r = await postJSON('/api/addnetwork', body); const j = await r.json();
-    if (!r.ok) flashChip('Ошибка: ' + (j.error || r.status)); else refreshView();
+    if (!r.ok) { flashChip('Ошибка: ' + (j.error || r.status)); }
+    else { activeView = 'list'; refreshView(); }  // после добавления — назад к списку с новой сетью
     return;
   }
   if (act === 'senddiag') {
