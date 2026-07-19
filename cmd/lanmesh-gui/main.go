@@ -148,6 +148,7 @@ func main() {
 	}
 
 	logs := setupLogging()
+	cleanupOldExe() // убрать .old/.new-хвосты прошлого автообновления
 
 	// Адаптер требует прав администратора — если их нет, перезапускаемся с UAC.
 	ensureAdmin()
@@ -188,6 +189,8 @@ func main() {
 	mux.HandleFunc("/api/diagnose", guard(handleDiagnose))
 	mux.HandleFunc("/api/settings", guard(handleSettings))
 	mux.HandleFunc("/api/invite", guard(handleInvite))
+	mux.HandleFunc("/api/checkupdate", guard(handleCheckUpdate))
+	mux.HandleFunc("/api/update", guard(handleUpdate))
 
 	go func() {
 		if err := http.Serve(ln, mux); err != nil {
@@ -440,7 +443,8 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 		SavedNets     []savedNet `json:"savedNets"`
 		CfgSignals    []string   `json:"cfgSignals"`
 		CfgRelay      string     `json:"cfgRelay"`
-	}{StateView: st, SendLogs: sendLogs, SavedNetworks: len(savedList), SavedNets: savedList, CfgSignals: cfgSignals, CfgRelay: cfgRelay}
+		Version       string     `json:"version"`
+	}{StateView: st, SendLogs: sendLogs, SavedNetworks: len(savedList), SavedNets: savedList, CfgSignals: cfgSignals, CfgRelay: cfgRelay, Version: version}
 	writeJSON(w, out, http.StatusOK)
 }
 

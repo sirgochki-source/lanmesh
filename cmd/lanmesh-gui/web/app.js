@@ -2,7 +2,7 @@ import { renderHeader, renderRail, pickMode, renderThemePopover } from './views/
 import { RttHistory } from './lib/rtt-history.js';
 import { diffPeers } from './lib/peerdiff.js';
 import { collectPeers } from './lib/collect.js';
-import { dispName } from './lib/sanitize.js';
+import { dispName, esc } from './lib/sanitize.js';
 import { parseInvite } from './lib/invite.js';
 import { computeRates } from './lib/traffic.js';
 import { srvRow } from './views/settings.js';
@@ -210,6 +210,30 @@ document.addEventListener('click', async (e) => {
     const list = document.getElementById('sig-list'); if (list) list.innerHTML = srvRow();
     const relay = document.getElementById('s-relay'); if (relay) relay.value = '';
     flashChip('Сброшено к стандартным серверам');
+    return;
+  }
+  if (act === 'check-update') {
+    const note = document.getElementById('upd-note');
+    if (note) note.textContent = 'Проверяю…';
+    const r = await fetch('/api/checkupdate'); const j = await r.json().catch(() => ({}));
+    if (!note) return;
+    if (!r.ok) { note.textContent = 'Ошибка: ' + (j.error || r.status); return; }
+    if (j.hasUpdate) {
+      note.innerHTML = `Доступна <b>${esc(j.latest)}</b> (у вас ${esc(j.current)}). `
+        + `<button class="btn-primary upd-btn" data-act="do-update">⬇ Обновить и перезапустить</button>`;
+    } else {
+      note.textContent = `У вас последняя версия (${j.current}).`;
+    }
+    return;
+  }
+  if (act === 'do-update') {
+    const note = document.getElementById('upd-note');
+    const btn = t.closest('[data-act="do-update"]'); if (btn) btn.disabled = true;
+    if (note) note.textContent = 'Скачиваю и обновляю… приложение перезапустится через пару секунд.';
+    const r = await postJSON('/api/update'); const j = await r.json().catch(() => ({}));
+    if (!r.ok) { if (note) note.textContent = 'Ошибка обновления: ' + (j.error || r.status); if (btn) btn.disabled = false; }
+    else if (j.upToDate) { if (note) note.textContent = 'Уже последняя версия.'; }
+    else if (note) note.textContent = 'Обновление установлено, перезапускаюсь…';
     return;
   }
   const inviteTag = t.closest('[data-invite]')?.dataset.invite;

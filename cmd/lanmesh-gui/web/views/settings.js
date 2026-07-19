@@ -29,7 +29,11 @@ export function settingsBody(state) {
     + `<h2 class="soon-h">Диагностика</h2>`
     + `<button class="btn-ghost" data-act="senddiag">📤 Отправить диагностику</button>`
     + `<label class="chk"><input type="checkbox" id="s-logs" ${state.sendLogs ? 'checked' : ''} data-act="sendlogs"> автоотправка логов</label>`
-    + `<div id="diag-note" class="hint"></div>`;
+    + `<div id="diag-note" class="hint"></div>`
+    + `<h2 class="soon-h">Версия и обновления</h2>`
+    + `<div class="ver-row"><span>Текущая версия: <b>${esc(state.version || '—')}</b></span>`
+    + `<button class="btn-ghost" data-act="check-update">Проверить обновления</button></div>`
+    + `<div id="upd-note" class="hint"></div>`;
 }
 
 // Подробный режим — настройки в рабочей области.
