@@ -71,6 +71,21 @@ test('renderDetailed list содержит плитку качества', () =>
   assert.match(renderDetailed(st, 'list', {}), /Качество/);
 });
 
+test('renderDetailed list: строка сигнальных серверов с подписями и статусом', () => {
+  const st = {
+    running: true, selfEndpoint: 'x', networks: [{
+      name: 'n', tag: 't', signals: [{ host: 'eu-1', up: true }, { host: 'us-1', up: false }],
+      peers: [{ name: 'A', vip: '1', status: 'direct', rttMs: 18, signals: [true, false] }],
+    }],
+  };
+  const s = renderDetailed(st, 'list', {});
+  assert.match(s, /class="sigdots labeled"/);
+  assert.match(s, /class="sig-item up"/);
+  assert.match(s, /class="sig-item down"/);
+  assert.match(s, />eu-1</);
+  assert.match(s, />us-1</);
+});
+
 test('renderDetailed list: плитка «Трафик» показывает реальный накопленный трафик и текущую скорость', () => {
   const st = {
     running: true, selfEndpoint: 'x', networks: [{

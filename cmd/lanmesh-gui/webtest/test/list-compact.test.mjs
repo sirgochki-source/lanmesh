@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { peerRowCompact, netCardCompact, renderCompact, addFormHtml, renderView } from '../../web/views/list.js';
+import { peerRowCompact, netCardCompact, renderCompact, addFormHtml, renderView, signalDots } from '../../web/views/list.js';
 import { fmtUptime } from '../../web/lib/format.js';
 
 // renderView читает window.renderDetailed (заглушка до Task 11); в браузере window
@@ -54,6 +54,37 @@ test('netCardCompact: жёлтая точка при ошибке сигналк
   const s = netCardCompact({ name: 'n', tag: 't', signalError: 'недоступна', peers: [] });
   assert.match(s, /🟡/);
 });
+test('signalDots: точка на каждый сервер, класс up/down, хост в подсказке', () => {
+  const s = signalDots([{ host: 'eu-1', up: true }, { host: 'us-1', up: false }]);
+  assert.match(s, /class="sig up"/);
+  assert.match(s, /class="sig down"/);
+  assert.match(s, /eu-1: на связи/);
+  assert.match(s, /us-1: нет ответа/);
+  assert.equal((s.match(/class="sig /g) || []).length, 2); // ровно две точки
+});
+test('signalDots: пустой список — ничего не рисуем', () => {
+  assert.equal(signalDots([]), '');
+  assert.equal(signalDots(undefined), '');
+});
+test('signalDots labeled: подпись хоста рядом с точкой', () => {
+  const s = signalDots([{ host: 'eu-1', up: true }], true);
+  assert.match(s, /class="sigdots labeled"/);
+  assert.match(s, /class="sig-item up"/);
+  assert.match(s, />eu-1</);           // подпись хоста присутствует
+});
+test('signalDots санитизирует host', () => {
+  const s = signalDots([{ host: 'a<b>&"', up: true }]);
+  assert.ok(!s.includes('<b>'));       // экранировано esc()
+});
+test('netCardCompact: при наличии signals рисует точки по серверам, а не эмодзи', () => {
+  const s = netCardCompact({ name: 'n', tag: 't', signalError: '', signals: [
+    { host: 'eu-1', up: true }, { host: 'us-1', up: false },
+  ], peers: [] });
+  assert.match(s, /class="sig up"/);
+  assert.match(s, /class="sig down"/);
+  assert.doesNotMatch(s, /🟢|🟡/);      // эмодзи-запаска не используется, когда есть signals
+});
+
 test('netCardCompact: пустая сеть даёт подсказку с именем сети', () => {
   const s = netCardCompact({ name: 'myteam', tag: 't', peers: [] });
   assert.match(s, /Пока никого/);

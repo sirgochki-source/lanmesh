@@ -14,6 +14,22 @@ const pngHtml = (peer) => {
 };
 const sdotCls = (s) => s === 'direct' ? 'direct' : s === 'relay' ? 'relay' : 'conn';
 
+// Индикатор сигнальных серверов: точка на каждый сервер, зелёная = отвечает, красная =
+// молчит; хост и статус — в подсказке. signals = net.signals = [{host, up}]. labeled=true
+// (подробный режим) добавляет подпись хоста рядом с точкой; в компактном — только точки.
+export function signalDots(signals, labeled = false) {
+  const list = signals || [];
+  if (!list.length) return '';
+  const items = list.map(s => {
+    const cls = s.up ? 'up' : 'down';
+    const tip = `${esc(s.host)}: ${s.up ? 'на связи' : 'нет ответа'}`;
+    return labeled
+      ? `<span class="sig-item ${cls}" title="${tip}"><i></i>${esc(s.host)}</span>`
+      : `<i class="sig ${cls}" title="${tip}"></i>`;
+  }).join('');
+  return `<span class="sigdots${labeled ? ' labeled' : ''}" title="сигнальные серверы">${items}</span>`;
+}
+
 // Числовая сортировка по IP: лексикографическое сравнение строк неверно упорядочивает
 // октеты ("25.44.9.1" оказывался бы после "25.44.31.7").
 function cmpVip(a, b) {
@@ -33,8 +49,10 @@ export function netCardCompact(net) {
   const body = peers.length
     ? peers.map(peerRowCompact).join('')
     : `<div class="empty">Пока никого. Позови друга в сеть <b>${dispName(net.name)}</b> с тем же паролем или пришли ссылку кнопкой «Пригласить».</div>`;
-  const dot = net.signalError ? '🟡' : '🟢';
-  return `<div class="netcard"><div class="netcard-hd"><span class="net-name">${dot} ${dispName(net.name)}</span>`
+  // Индикатор сигналок по каждому серверу; запасной единичный эмодзи — если бэкенд
+  // не прислал список серверов (старое состояние без net.signals).
+  const sig = (net.signals && net.signals.length) ? signalDots(net.signals) : (net.signalError ? '🟡' : '🟢');
+  return `<div class="netcard"><div class="netcard-hd"><span class="net-name">${dispName(net.name)}</span> ${sig}`
     + `<span class="cnt">· ${peers.length}</span><span class="grow"></span>`
     + `<button class="btn-ghost" data-invite="${esc(net.tag)}">⧉ Пригласить</button>`
     + `<button class="btn-ghost" data-leave="${esc(net.tag)}">Выйти</button></div>`
@@ -123,7 +141,8 @@ export function renderDetailed(state, view, histories = {}, activeNetTag, rates 
   const rows = peers.map(p => peerRowDetailed(p, histories[p.vip] || [])).join('') || '<div class="empty">Пока никого.</div>';
   const traf = netTrafficTotals(net, rates);
   return `<div class="dmain"><div class="dhd"><div><div class="title">${dispName(net.name)}</div>`
-    + `<div class="sub">${peers.length} ${plural(peers.length, 'участник', 'участника', 'участников')}</div></div><span class="grow"></span>`
+    + `<div class="sub">${peers.length} ${plural(peers.length, 'участник', 'участника', 'участников')}</div>`
+    + `${signalDots(net.signals, true)}</div><span class="grow"></span>`
     + `<button class="btn-ghost" data-invite="${esc(net.tag)}">⧉ Пригласить</button></div>`
     + `<div class="tiles">${qualityTile(net)}`
     + `<div class="tile"><div class="k">Трафик</div><div class="big">${fmtBytes(traf.rx + traf.tx)}</div>`
