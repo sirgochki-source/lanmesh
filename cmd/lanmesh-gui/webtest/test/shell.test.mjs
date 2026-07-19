@@ -72,7 +72,7 @@ test('renderThemePopover: 9 фишек, активная помечена .on', 
   assert.equal((s.match(/class="theme-chip/g) || []).length, 9);
   assert.match(s, /theme-chip on" data-theme="ocean"/);
   assert.match(s, /data-theme="mint"/);
-  assert.match(s, /data-theme="indigo"/);
+  assert.match(s, /data-theme="night"/);
 });
 test('renderHeader: содержит кнопку выбора темы (оба режима)', () => {
   assert.match(renderHeader({ running: true, selfEndpoint: 'x', networks: [] }, 'compact'), /data-act="theme-menu"/);

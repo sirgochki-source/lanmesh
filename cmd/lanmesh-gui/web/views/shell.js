@@ -39,17 +39,18 @@ export function connBtn(state) {
     + `<span class="pw">⏻</span><span class="lbl">${label}</span></button>`;
 }
 
-// 9 тем оформления: id (= data-theme в CSS), подпись и две краски для превью-точки.
+// 9 вариантов оформления: id (= data-theme в CSS), подпись и две краски для превью-точки.
+// Отличаются не только акцентом, но и стеклом/размытием/фоном (см. app.css).
 export const THEMES = [
   { id: 'mint', name: 'Мята', a: '#37f5c5', b: '#22d3ee' },
   { id: 'aurora', name: 'Аврора', a: '#a78bfa', b: '#7c3aed' },
   { id: 'ocean', name: 'Океан', a: '#38bdf8', b: '#0ea5e9' },
   { id: 'sunset', name: 'Закат', a: '#fb923c', b: '#f43f5e' },
-  { id: 'rose', name: 'Роза', a: '#f472b6', b: '#d946ef' },
-  { id: 'emerald', name: 'Изумруд', a: '#34d399', b: '#14b8a6' },
+  { id: 'frost', name: 'Иней', a: '#7dd3fc', b: '#38bdf8' },
+  { id: 'onyx', name: 'Оникс', a: '#34d399', b: '#10b981' },
   { id: 'gold', name: 'Золото', a: '#fbbf24', b: '#f59e0b' },
-  { id: 'crimson', name: 'Малина', a: '#fb7185', b: '#e11d48' },
-  { id: 'indigo', name: 'Индиго', a: '#818cf8', b: '#6366f1' },
+  { id: 'neon', name: 'Неон', a: '#fb7185', b: '#e11d48' },
+  { id: 'night', name: 'Ночь', a: '#818cf8', b: '#6366f1' },
 ];
 
 // Кнопка-палитра: точка в текущем акценте (var(--accent)); клик открывает поповер.

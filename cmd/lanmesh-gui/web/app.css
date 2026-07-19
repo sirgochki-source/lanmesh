@@ -36,26 +36,66 @@
   --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
   /* уровни качества связи (Task 11) — переиспользуют уже заданные акценты,
      чтобы плитка «Качество» и стрелка спарклайна не заводили свою палитру */
-  --q-good: var(--accent-2);  --q-ok: var(--ping-ok);  --q-bad: var(--ping-bad);  --q-connecting: var(--fg-mut);
+  --q-good: var(--sig-on);  --q-ok: var(--ping-ok);  --q-bad: var(--ping-bad);  --q-connecting: var(--fg-mut);  /* качество — статус, не тема */
 }
 
-/* ==================== Темы оформления (9 штук) ====================
-   Каждая переопределяет только акцент, его светлый вариант, второй стоп градиента и два
-   аврора-свечения. Подложки/границы/текст-на-акценте выводятся из --accent (см. :root). */
-:root[data-theme="mint"]    { --accent:#37f5c5; --accent-2:#5eead4; --accent-grad:#22d3ee; --glow-1:rgba(52,229,176,.18);  --glow-2:rgba(139,92,246,.20); }
-:root[data-theme="aurora"]  { --accent:#a78bfa; --accent-2:#c4b5fd; --accent-grad:#7c3aed; --glow-1:rgba(167,139,250,.22); --glow-2:rgba(56,189,248,.16); }
-:root[data-theme="ocean"]   { --accent:#38bdf8; --accent-2:#7dd3fc; --accent-grad:#0ea5e9; --glow-1:rgba(56,189,248,.20);  --glow-2:rgba(45,212,191,.16); }
-:root[data-theme="sunset"]  { --accent:#fb923c; --accent-2:#fdba74; --accent-grad:#f43f5e; --glow-1:rgba(251,146,60,.20);  --glow-2:rgba(244,63,94,.18); }
-:root[data-theme="rose"]    { --accent:#f472b6; --accent-2:#f9a8d4; --accent-grad:#d946ef; --glow-1:rgba(244,114,182,.22); --glow-2:rgba(217,70,239,.16); }
-:root[data-theme="emerald"] { --accent:#34d399; --accent-2:#6ee7b7; --accent-grad:#14b8a6; --glow-1:rgba(52,211,153,.20);  --glow-2:rgba(16,185,129,.15); }
-:root[data-theme="gold"]    { --accent:#fbbf24; --accent-2:#fcd34d; --accent-grad:#f59e0b; --glow-1:rgba(251,191,36,.20);  --glow-2:rgba(245,158,11,.17); }
-:root[data-theme="crimson"] { --accent:#fb7185; --accent-2:#fda4af; --accent-grad:#e11d48; --glow-1:rgba(251,113,133,.22); --glow-2:rgba(190,18,60,.16); }
-:root[data-theme="indigo"]  { --accent:#818cf8; --accent-2:#a5b4fc; --accent-grad:#6366f1; --glow-1:rgba(129,140,248,.22); --glow-2:rgba(56,189,248,.15); }
-
-/* мягкая смена акцента при переключении темы */
-.pill, .sdot, .sig, .badge, .conn-btn, .netitem, .av, .btn-primary, .theme-dot {
-  transition: background-color .28s ease, border-color .28s ease, color .28s ease, box-shadow .28s ease;
+/* ==================== Темы оформления (9 вариантов) ====================
+   Это не просто разные цвета: каждая тема — своё ОФОРМЛЕНИЕ. Помимо акцента и свечений
+   темы меняют прозрачность стекла (--glass/--glass-border/--glass-hi), силу размытия
+   (--blur) и тон фона (--bg-page/--bg-panel) — от матового «Оникса» до полупрозрачного
+   «Инея» и контрастного «Неона». Мягкие подложки/границы/текст выводятся из --accent. */
+:root[data-theme="mint"] {   /* Мята — сбалансированное стекло */
+  --accent:#37f5c5; --accent-2:#5eead4; --accent-grad:#22d3ee;
+  --glass:rgba(255,255,255,.06); --glass-border:rgba(255,255,255,.11); --glass-hi:rgba(255,255,255,.09); --blur:16px;
+  --bg-page:#08090c; --bg-panel:#0a0d12; --glow-1:rgba(52,229,176,.18); --glow-2:rgba(139,92,246,.20);
 }
+:root[data-theme="aurora"] { /* Аврора — морозное стекло, насыщенное свечение */
+  --accent:#a78bfa; --accent-2:#c4b5fd; --accent-grad:#7c3aed;
+  --glass:rgba(255,255,255,.085); --glass-border:rgba(255,255,255,.15); --glass-hi:rgba(255,255,255,.12); --blur:22px;
+  --bg-page:#0a0813; --bg-panel:#0c0a18; --glow-1:rgba(167,139,250,.30); --glow-2:rgba(56,189,248,.22);
+}
+:root[data-theme="ocean"] {  /* Океан — глубокий холодный, спокойный */
+  --accent:#38bdf8; --accent-2:#7dd3fc; --accent-grad:#0ea5e9;
+  --glass:rgba(255,255,255,.05); --glass-border:rgba(160,210,255,.12); --glass-hi:rgba(255,255,255,.08); --blur:18px;
+  --bg-page:#05090f; --bg-panel:#070d15; --glow-1:rgba(56,189,248,.20); --glow-2:rgba(45,212,191,.15);
+}
+:root[data-theme="sunset"] { /* Закат — тёплое, уютное */
+  --accent:#fb923c; --accent-2:#fdba74; --accent-grad:#f43f5e;
+  --glass:rgba(255,240,230,.06); --glass-border:rgba(255,200,160,.13); --glass-hi:rgba(255,255,255,.09); --blur:14px;
+  --bg-page:#0c0806; --bg-panel:#0f0b08; --glow-1:rgba(251,146,60,.24); --glow-2:rgba(244,63,94,.20);
+}
+:root[data-theme="frost"] {  /* Иней — максимум прозрачности и размытия */
+  --accent:#7dd3fc; --accent-2:#bae6fd; --accent-grad:#38bdf8;
+  --glass:rgba(255,255,255,.12); --glass-border:rgba(255,255,255,.22); --glass-hi:rgba(255,255,255,.16); --blur:30px;
+  --bg-page:#0a0e14; --bg-panel:#0e131b; --glow-1:rgba(125,211,252,.16); --glow-2:rgba(199,210,254,.14);
+}
+:root[data-theme="onyx"] {   /* Оникс — матовый, плотный, чёткий (минимум стекла) */
+  --accent:#34d399; --accent-2:#6ee7b7; --accent-grad:#10b981;
+  --glass:rgba(255,255,255,.028); --glass-border:rgba(255,255,255,.07); --glass-hi:rgba(255,255,255,.05); --blur:6px;
+  --bg-page:#050607; --bg-panel:#070809; --glow-1:rgba(52,211,153,.10); --glow-2:rgba(16,185,129,.08);
+}
+:root[data-theme="gold"] {   /* Золото — тёплое, «люксовое» */
+  --accent:#fbbf24; --accent-2:#fcd34d; --accent-grad:#f59e0b;
+  --glass:rgba(255,245,225,.06); --glass-border:rgba(255,220,150,.13); --glass-hi:rgba(255,255,255,.10); --blur:16px;
+  --bg-page:#0b0904; --bg-panel:#0d0b06; --glow-1:rgba(251,191,36,.20); --glow-2:rgba(245,158,11,.17);
+}
+:root[data-theme="neon"] {   /* Неон — почти чёрный фон, яркое свечение, высокий контраст */
+  --accent:#fb7185; --accent-2:#fda4af; --accent-grad:#e11d48;
+  --glass:rgba(255,255,255,.045); --glass-border:rgba(255,255,255,.10); --glass-hi:rgba(255,255,255,.07); --blur:13px;
+  --bg-page:#040305; --bg-panel:#060507; --glow-1:rgba(251,113,133,.34); --glow-2:rgba(190,18,60,.24);
+}
+:root[data-theme="night"] {  /* Ночь — мягкое приглушённое, индиго */
+  --accent:#818cf8; --accent-2:#a5b4fc; --accent-grad:#6366f1;
+  --glass:rgba(255,255,255,.055); --glass-border:rgba(180,190,255,.11); --glass-hi:rgba(255,255,255,.08); --blur:18px;
+  --bg-page:#080910; --bg-panel:#0a0b15; --glow-1:rgba(129,140,248,.16); --glow-2:rgba(99,102,241,.12);
+}
+
+/* мягкое перетекание при переключении темы (цвет, фон, свечение) */
+.pill, .sdot, .sig, .badge, .conn-btn, .netitem, .av, .btn-primary, .theme-dot,
+.netcard, .row, .tile, .rail, .drow, .self, .addcard, .warnbox, .theme-pop {
+  transition: background-color .3s ease, border-color .3s ease, color .3s ease, box-shadow .3s ease;
+}
+#root, body { transition: background-color .3s ease, background .3s ease; }
 
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -299,9 +339,9 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
   min-width: 52px; white-space: nowrap;
 }
 /* классы из мокапа (good/ok/bad) — держим как алиасы на случай статичной разметки */
-.png.good { color: var(--accent-2); } .png.ok { color: var(--ping-ok); } .png.bad { color: var(--ping-bad); }
+.png.good { color: var(--sig-on); } .png.ok { color: var(--ping-ok); } .png.bad { color: var(--ping-bad); }
 /* реальный код красит по rttClass() — классы rtt-good/rtt-ok/rtt-bad */
-.png.rtt-good { color: var(--accent-2); } .png.rtt-ok { color: var(--ping-ok); } .png.rtt-bad { color: var(--ping-bad); }
+.png.rtt-good { color: var(--sig-on); } .png.rtt-ok { color: var(--ping-ok); } .png.rtt-bad { color: var(--ping-bad); }
 .png.conn { color: var(--ping-ok); font-size: 10.5px; font-weight: 600; }
 
 /* ---------- пустая сеть ---------- */
