@@ -209,7 +209,7 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
 /* ---------- вертикальные строки-карточки участников (без аватарок) ---------- */
 .rows { padding: 2px 11px 11px; display: flex; flex-direction: column; gap: 5px; }
 .row {
-  display: flex; align-items: center; gap: 9px; padding: 8px 11px; border-radius: 11px;
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px;
   background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.10);
   backdrop-filter: blur(14px) saturate(1.2); box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
 }
@@ -233,10 +233,10 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
 .sig-item.down i { background: var(--ping-bad); box-shadow: 0 0 6px rgba(255,128,128,.5); }
 .nm { font-size: 13px; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ip { font-size: 11px; color: var(--fg-dim); white-space: nowrap; }
-/* компактная строка пира: имя+IP в столбик (как в подробном), имя помельче */
-.row .who { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
-.row .who .nm { font-size: 12px; }
-.row .who .ip { font-size: 10.5px; }
+/* компактная строка пира: имя+IP в столбик (как в подробном), плотно и мельче */
+.row .who { display: flex; flex-direction: column; gap: 0; min-width: 0; }
+.row .who .nm { font-size: 11px; line-height: 1.25; }
+.row .who .ip { font-size: 10px; line-height: 1.2; }
 .png {
   font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right;
   min-width: 52px; white-space: nowrap;
