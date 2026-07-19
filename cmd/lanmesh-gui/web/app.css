@@ -151,21 +151,24 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
 
 /* ---------- тосты ---------- */
 .toasts {
-  position: fixed; top: 14px; right: 14px; z-index: 10; display: flex; flex-direction: column;
-  gap: 8px; width: 280px; max-width: calc(100vw - 28px); pointer-events: none;
+  position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 10;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 8px; max-width: calc(100vw - 28px); pointer-events: none;
 }
 .toast {
-  pointer-events: auto; padding: 10px 12px 10px 14px; border-radius: var(--r-row); font-size: 12.5px; color: var(--fg);
+  pointer-events: auto; padding: 10px 14px; border-radius: var(--r-pill); font-size: 12.5px; color: var(--fg);
+  max-width: 100%; text-align: center;
   background: var(--glass); border: 1px solid var(--glass-border); border-left: 3px solid var(--fg-dim);
   backdrop-filter: blur(var(--blur)) saturate(1.2);
   box-shadow: inset 0 1px 0 var(--glass-hi), 0 6px 18px rgba(0,0,0,.28);
   /* скрыт по умолчанию — app.js добавляет .show через setTimeout(...,10) после appendChild
      (не сразу: иначе браузер схлопнёт стартовое и целевое состояние в один кадр и transition
-     не сыграет), тот же трюк работает и на исчезновении (снятие .show) */
-  opacity: 0; transform: translateX(10px) scale(.98);
+     не сыграет), тот же трюк работает и на исчезновении (снятие .show). Тосты снизу по
+     центру — анимация всплытием снизу вверх (translateY). */
+  opacity: 0; transform: translateY(10px) scale(.98);
   transition: opacity .22s ease, transform .22s ease;
 }
-.toast.show { opacity: 1; transform: translateX(0) scale(1); }
+.toast.show { opacity: 1; transform: translateY(0) scale(1); }
 .toast.in  { border-left-color: var(--accent-2); }   /* вход — мята, как акцент бренда */
 .toast.out { border-left-color: var(--fg-dim); }     /* выход — приглушённый, менее тревожный чем ping-bad */
 
