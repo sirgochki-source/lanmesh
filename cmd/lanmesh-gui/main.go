@@ -237,9 +237,19 @@ func main() {
 			}
 		})
 	})
-	// Окно «своё», без нативной рамки Windows: приложение само рисует полосу-
-	// заголовок и кнопки. Перетаскивание/ресайз/закрытие-в-трей — в installCustomFrame.
-	installCustomFrame(uintptr(w.Window()))
+	// Мост перетаскивания окна: фронтенд зовёт lmDrag на mousedown по своей полосе-
+	// заголовку (WM_NCHITTEST не работает — WebView2 накрывает клиент, см. dragWindow).
+	w.Bind("lmDrag", func() {
+		hwnd := uintptr(w.Window())
+		w.Dispatch(func() { dragWindow(hwnd) })
+	})
+	// Окно «своё», без нативной рамки Windows: сперва ставим субклассинг (перехват
+	// WM_NCCALCSIZE/WM_CLOSE), затем makeFrameless убирает нативный заголовок и
+	// пересчитывает рамку (SWP_FRAMECHANGED) — уже через наш перехватчик, поэтому
+	// верхняя кромка убирается сразу. Полосу-заголовок рисует приложение; ресайз —
+	// нативной рамкой по краям; перетаскивание — через мост lmDrag.
+	installFrame(uintptr(w.Window()))
+	makeFrameless(uintptr(w.Window()))
 
 	// Иконка в системном трее + меню (Открыть окно / Выход) — на отдельном
 	// залоченном OS-потоке, чтобы её message-loop не конфликтовал с главным
@@ -284,8 +294,10 @@ var (
 	procGetWindowLongPtr = user32.NewProc("GetWindowLongPtrW")
 	procSetWindowLongPtr = user32.NewProc("SetWindowLongPtrW")
 	procCallWindowProc   = user32.NewProc("CallWindowProcW")
-	procGetWindowRect    = user32.NewProc("GetWindowRect")
 	procFindWindow       = user32.NewProc("FindWindowW")
+	procSetWindowPos     = user32.NewProc("SetWindowPos")
+	procSendMessage      = user32.NewProc("SendMessageW")
+	procReleaseCapture   = user32.NewProc("ReleaseCapture")
 )
 
 // showExisting поднимает окно уже запущенного экземпляра lanmesh (по заголовку) —
@@ -302,51 +314,76 @@ func showExisting() {
 	}
 }
 
-// Кастомная (frameless) рамка: нативный заголовок убран, полосу рисует само
-// приложение. Геометрия зон для WM_NCHITTEST.
+// Своя (frameless) рамка окна. Подход устойчив к тому, что дочернее окно WebView2
+// накрывает всю клиентскую область (из-за чего WM_NCHITTEST у родителя не срабатывал,
+// и полоса не перетаскивалась):
+//   - убираем WS_CAPTION (нативный заголовок), но ОСТАВЛЯЕМ WS_THICKFRAME — тонкую
+//     рамку ресайза: за края окно тянется нативно (рамка — не-клиентская зона,
+//     WebView2 её не накрывает);
+//   - полосу-заголовок рисует само приложение; перетаскивание инициирует фронтенд
+//     через мост lmDrag (dragWindow) — ReleaseCapture + WM_NCLBUTTONDOWN(HTCAPTION);
+//   - WM_CLOSE (наш крестик из панели) прячет окно в трей, а не уничтожает.
 const (
-	swMinimize   = 6
-	wmNCCalcSize = 0x0083
-	wmNCHitTest  = 0x0084
+	swMinimize   = 6      // SW_MINIMIZE
+	swHide       = 0      // SW_HIDE — спрятать окно (сворачивание в трей)
+	swRestore    = 9      // SW_RESTORE — восстановить/показать окно
+	wmClose      = 0x0010 // WM_CLOSE
+	wmNCCalcSize = 0x0083 // WM_NCCALCSIZE
 
-	htClient      = 1
-	htCaption     = 2
-	htLeft        = 10
-	htRight       = 11
-	htTop         = 12
-	htTopLeft     = 13
-	htTopRight    = 14
-	htBottom      = 15
-	htBottomLeft  = 16
-	htBottomRight = 17
+	gwlStyle  = -16        // GWL_STYLE
+	wsCaption = 0x00C00000 // WS_CAPTION — нативный заголовок, снимаем
 
-	frameBorder = 6   // зона ресайза у краёв, px
-	captionH    = 40  // высота своей полосы-заголовка, px
-	ctrlZone    = 230 // правая зона (pill + кнопки) — кликабельна, не тянет окно
+	swpNoSize       = 0x0001
+	swpNoMove       = 0x0002
+	swpNoZOrder     = 0x0004
+	swpNoActivate   = 0x0010
+	swpFrameChanged = 0x0020 // пересчитать рамку СРАЗУ, не дожидаясь сворачивания
+
+	wmNCLButtonDown = 0x00A1 // WM_NCLBUTTONDOWN
+	htCaption       = 2      // HTCAPTION — «нажали на заголовок» → нативный цикл перемещения
 )
+
+// origWndProc — оригинальная оконная процедура WebView2, сохранённая при установке
+// нашего перехватчика (installFrame). Ненулевой ⇒ перехват стоит.
+var origWndProc uintptr
 
 type winRect struct{ left, top, right, bottom int32 }
 
-const (
-	swHide    = 0 // SW_HIDE — спрятать окно (сворачивание в трей)
-	swRestore = 9 // SW_RESTORE — восстановить/показать окно
-	wmClose   = 0x0010
-)
+// nccalcsizeParams — NCCALCSIZE_PARAMS: при wParam=TRUE lParam указывает на неё,
+// rgrc[0] на входе = предлагаемый прямоугольник окна, на выходе = клиентский.
+type nccalcsizeParams struct {
+	rgrc  [3]winRect
+	lppos uintptr
+}
 
-// origWndProc — оригинальная оконная процедура WebView2, сохранённая при
-// установке нашего перехватчика (installHideOnClose). Ненулевой ⇒ перехват стоит.
-var origWndProc uintptr
+// makeFrameless убирает нативный заголовок (WS_CAPTION), оставляя рамку ресайза.
+// SWP_FRAMECHANGED заставляет Windows пересчитать не-клиентскую область и клиент
+// НЕМЕДЛЕННО — иначе смена стиля проявляется только после сворачивания/разворачивания.
+func makeFrameless(hwnd uintptr) {
+	gwl := int32(gwlStyle) // через переменную: uintptr(константа -16) переполняется при компиляции
+	style, _, _ := procGetWindowLongPtr.Call(hwnd, uintptr(gwl))
+	procSetWindowLongPtr.Call(hwnd, uintptr(gwl), style&^wsCaption)
+	procSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0,
+		swpNoMove|swpNoSize|swpNoZOrder|swpNoActivate|swpFrameChanged)
+}
 
-// installCustomFrame субклассирует оконную процедуру WebView2 и делает окно
-// «своим», без нативной рамки Windows:
-//   - WM_NCCALCSIZE: клиентская область = всё окно (нативный заголовок/рамка убраны);
-//   - WM_NCHITTEST: сами раздаём зоны — края на ресайз, верхняя полоса на
-//     перетаскивание (HTCAPTION — заодно Aero-snap и максимизация двойным кликом),
-//     правую зону с кнопками и остальное — в клиент (клики уходят в WebView2);
-//   - WM_CLOSE: крестик (наш, из панели) прячет окно в трей, а не уничтожает.
+// dragWindow запускает нативное перетаскивание окна от текущей позиции курсора —
+// вызывается из фронтенда (мост lmDrag) на mousedown по своей полосе-заголовку.
+// ReleaseCapture снимает захват мыши, WM_NCLBUTTONDOWN(HTCAPTION) вводит окно в
+// системный цикл перемещения (с ним же работает Aero-snap к краям экрана).
+func dragWindow(hwnd uintptr) {
+	procReleaseCapture.Call()
+	procSendMessage.Call(hwnd, wmNCLButtonDown, htCaption, 0)
+}
+
+// installFrame субклассирует оконную процедуру WebView2:
+//   - WM_NCCALCSIZE: убираем ВЕРХНЮЮ не-клиентскую кромку (иначе без заголовка
+//     Windows рисует её светлой — «белая полоса сверху»), сохраняя боковые/нижнюю
+//     рамки ресайза. Берём дефолтный расчёт рамки и возвращаем верх клиента к краю окна;
+//   - WM_CLOSE: наш крестик (из панели) прячет окно в трей, а не уничтожает его.
 //
 // Прочие сообщения делегируем оригинальной процедуре.
-func installCustomFrame(hwnd uintptr) {
+func installFrame(hwnd uintptr) {
 	gwlpWndProc := int32(-4) // GWLP_WNDPROC
 	origWndProc, _, _ = procGetWindowLongPtr.Call(hwnd, uintptr(gwlpWndProc))
 	newProc := windows.NewCallback(func(h, msg, wparam, lparam uintptr) uintptr {
@@ -356,54 +393,21 @@ func installCustomFrame(hwnd uintptr) {
 			return 0 // проглатываем закрытие — окно не уничтожается
 		case wmNCCalcSize:
 			if wparam != 0 {
-				return 0 // без нативной не-клиентской рамки
+				// lparam — указатель на NCCALCSIZE_PARAMS, которым владеет Windows (стек
+				// диспетчера сообщений), не объект под GC. `go vet` помечает строку ниже
+				// (possible misuse of unsafe.Pointer) — ложное срабатывание: адрес стабилен
+				// на время обработки сообщения, перемещения нет.
+				sp := (*nccalcsizeParams)(unsafe.Pointer(lparam))
+				top := sp.rgrc[0].top                                        // верх окна до расчёта рамки
+				procCallWindowProc.Call(origWndProc, h, msg, wparam, lparam) // дефолтная рамка (инсеты со всех сторон)
+				sp.rgrc[0].top = top                                         // вернуть верх → клиент до края, без белой полосы
+				return 0
 			}
-		case wmNCHitTest:
-			return hitTest(h, lparam)
 		}
 		ret, _, _ := procCallWindowProc.Call(origWndProc, h, msg, wparam, lparam)
 		return ret
 	})
 	procSetWindowLongPtr.Call(hwnd, uintptr(gwlpWndProc), newProc)
-}
-
-// hitTest раздаёт зоны окна без нативной рамки по экранным координатам курсора
-// (lparam WM_NCHITTEST). Порядок важен: сначала углы, потом стороны, потом
-// полоса-заголовок, иначе диагонали ресайза «съедаются» сторонами.
-func hitTest(hwnd, lparam uintptr) uintptr {
-	x := int32(int16(lparam))
-	y := int32(int16(lparam >> 16))
-	var rc winRect
-	procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&rc)))
-	w := rc.right - rc.left
-	relX := x - rc.left
-	relY := y - rc.top
-	onL := relX < frameBorder
-	onR := relX >= w-frameBorder
-	onT := relY < frameBorder
-	onB := y >= rc.bottom-frameBorder
-	switch {
-	case onT && onL:
-		return htTopLeft
-	case onT && onR:
-		return htTopRight
-	case onB && onL:
-		return htBottomLeft
-	case onB && onR:
-		return htBottomRight
-	case onT:
-		return htTop
-	case onB:
-		return htBottom
-	case onL:
-		return htLeft
-	case onR:
-		return htRight
-	case relY < captionH && relX < w-ctrlZone:
-		return htCaption
-	default:
-		return htClient
-	}
 }
 
 // startTray поднимает иконку lanmesh в системном трее с меню (Открыть окно / Выход)

@@ -65,6 +65,8 @@ body {
 
 /* ---------- шапка ---------- */
 .hd { display: flex; align-items: center; gap: 8px; padding: 12px 12px 10px; }
+/* Полоса-заголовок — зона перетаскивания окна (native): не выделять текст при drag. */
+html.native .hd { user-select: none; -webkit-user-select: none; }
 .wm { font-size: 14.5px; font-weight: 750; color: #7a8698; }
 .wm b { color: var(--accent); }
 

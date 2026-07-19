@@ -197,6 +197,17 @@ document.addEventListener('change', async (e) => {
 // Отзывчивость: если пользователь не выбирал режим руками — следуем ширине окна.
 new ResizeObserver(() => { if (!manual) setMode(pickMode(innerWidth)); render(lastState); }).observe(document.documentElement);
 
+// Перетаскивание окна за свою полосу-заголовок (только нативное приложение, где есть
+// мост window.lmDrag). mousedown по .hd, кроме кликов по кнопкам/интерактивным
+// элементам, запускает нативный drag окна. Так надёжнее WM_NCHITTEST: дочернее окно
+// WebView2 накрывает клиент, и hit-test у родителя за полосу не срабатывает.
+document.addEventListener('mousedown', (e) => {
+  if (!window.lmDrag || e.button !== 0) return;
+  if (!e.target.closest('.hd')) return;
+  if (e.target.closest('button, a, input, [data-act], [data-win], [data-copy]')) return;
+  window.lmDrag();
+});
+
 // В нативном окне (webview2.Bind даёт window.lmWindow) — своя рамка: показываем
 // кнопки окна (свернуть/закрыть). В браузере/mock их нет.
 if (window.lmWindow) document.documentElement.classList.add('native');
