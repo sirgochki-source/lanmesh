@@ -24,6 +24,7 @@ export function renderHeader(state, mode) {
   }
   return `<div class="hd"><span class="wm">lan<b>mesh</b></span><span class="grow"></span>`
     + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>`
+    + `<button class="iconbtn" data-act="show-settings" title="Настройки">⚙</button>`
     + `<button class="iconbtn" data-act="expand" title="Развернуть">⤢</button></div>`;
 }
 

@@ -389,3 +389,8 @@ textarea:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .tcell.tx .tarr { color: var(--relay); }     /* отдача — тот же голубой, что у relay */
 .tcell .tval { font-size: 12.5px; font-weight: 600; color: var(--fg); }
 .tcell .trate { flex-basis: 100%; text-align: right; font-size: 10px; color: var(--fg-mut); }
+
+/* ---------- компактный экран настроек (вход через ⚙ в шапке) ---------- */
+.cfg-compact { padding: 0 11px 16px; }
+.cfg-compact-hd { display: flex; align-items: center; gap: 10px; padding: 6px 0 2px; }
+.cfg-compact-title { font-size: 15px; font-weight: 650; color: var(--fg); }

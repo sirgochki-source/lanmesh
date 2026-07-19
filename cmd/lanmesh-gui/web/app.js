@@ -103,6 +103,10 @@ document.addEventListener('click', (e) => {
   // браузере/mock его нет, поэтому гвардим. Меняет размер окна под режим.
   if (act === 'expand') { manual = true; localStorage.setItem('lm-mode', 'detailed'); setMode('detailed'); window.lmResize && window.lmResize('detailed'); render(lastState); return; }
   if (act === 'collapse') { manual = true; localStorage.setItem('lm-mode', 'compact'); setMode('compact'); window.lmResize && window.lmResize('compact'); render(lastState); return; }
+  // ⚙ в компактной шапке -> экран настроек; «← Список» -> назад. activeView живёт
+  // как модульное состояние (как в detailed), поэтому переживает опросы.
+  if (act === 'show-settings') { activeView = 'settings'; render(lastState); return; }
+  if (act === 'show-list') { activeView = 'list'; render(lastState); return; }
   // Клик по сети в рейле: выбираем её активной и переключаемся на список
   // (элемент несёт и data-net, и data-view="list" — обрабатываем здесь и выходим,
   // чтобы не сработала ещё раз ветка data-view ниже).

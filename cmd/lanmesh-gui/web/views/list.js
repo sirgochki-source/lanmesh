@@ -4,7 +4,7 @@ import { dispName, esc } from '../lib/sanitize.js';
 import { fmtRtt, rttClass, fmtUptime, plural, fmtBytes } from '../lib/format.js';
 import { quality } from '../lib/quality.js';
 import { sparklineSVG } from '../lib/sparkline.js';   // реально используется с Task 12 (накопление истории)
-import { renderSettings } from './settings.js';
+import { renderSettings, renderSettingsCompact } from './settings.js';
 import { renderTraffic, netTrafficTotals } from './traffic.js';
 
 const pngHtml = (peer) => {
@@ -41,7 +41,8 @@ export function netCardCompact(net) {
     + `<div class="rows">${body}</div></div>`;
 }
 
-export function renderCompact(state) {
+export function renderCompact(state, view = 'list') {
+  if (view === 'settings') return renderSettingsCompact(state);
   const nets = state.networks || [];
   const warn = state.running && !state.selfEndpoint
     ? '<div class="warnbox"><b>Внешний адрес неизвестен</b> — до тебя не достучатся. '
@@ -68,7 +69,7 @@ export function addFormHtml(open) {
 // Диспетчер видов. history в compact не нужна — только detailed (спарклайн).
 // rates — снимок текущих скоростей (Phase 3, см. computeRates()/app.js), тоже только detailed.
 export function renderView(state, mode, view, histories = {}, activeNetTag, rates = {}) {
-  if (mode === 'compact') return renderCompact(state);
+  if (mode === 'compact') return renderCompact(state, view);
   return window.renderDetailed ? window.renderDetailed(state, view, histories, activeNetTag, rates) : renderCompact(state);
 }
 
