@@ -22,10 +22,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"fyne.io/systray"
 	"github.com/jchv/go-webview2"
 	"golang.org/x/sys/windows"
 
@@ -44,6 +46,9 @@ func netTag(name, password string) string {
 
 //go:embed web
 var webFS embed.FS
+
+//go:embed trayicon.ico
+var trayIcon []byte
 
 const (
 	listenAddr = "127.0.0.1:8737"
@@ -208,8 +213,14 @@ func main() {
 			}
 		})
 	})
+	// Иконка в системном трее + меню (Открыть окно / Выход) — на отдельном
+	// залоченном OS-потоке, чтобы её message-loop не конфликтовал с главным
+	// message-loop WebView2 (w.Run() держит главный поток до закрытия окна).
+	startTray(w)
+
 	w.Navigate("http://" + listenAddr)
 	w.Run()
+	systray.Quit() // окно закрыли напрямую — гасим трей, чтобы процесс завершился
 	sess.Stop()
 }
 
@@ -234,6 +245,53 @@ func staticHandler() http.Handler {
 		log.Fatalf("web sub-fs: %v", err)
 	}
 	return http.FileServer(http.FS(webRoot))
+}
+
+// --- системный трей ---------------------------------------------------------
+
+var (
+	user32            = windows.NewLazySystemDLL("user32.dll")
+	procShowWindow    = user32.NewProc("ShowWindow")
+	procSetForeground = user32.NewProc("SetForegroundWindow")
+)
+
+const swRestore = 9 // SW_RESTORE — восстановить/показать окно
+
+// startTray поднимает иконку lanmesh в системном трее с меню (Открыть окно / Выход)
+// на ОТДЕЛЬНОМ залоченном OS-потоке. systray.Run заводит собственное скрытое окно и
+// качает его сообщения на этом потоке — независимо от message-loop WebView2 на
+// главном потоке. На Windows systray не требует главного потока, поэтому конфликта
+// двух циклов сообщений нет: каждый обслуживает окна своего потока.
+func startTray(w webview2.WebView) {
+	hwnd := uintptr(w.Window()) // HWND панели — стабильный хэндл, не GC-указатель
+	go func() {
+		runtime.LockOSThread()
+		systray.Run(func() {
+			systray.SetIcon(trayIcon)
+			systray.SetTitle("lanmesh")
+			systray.SetTooltip("lanmesh — виртуальная локалка для игр")
+			mOpen := systray.AddMenuItem("Открыть окно", "Показать панель lanmesh")
+			systray.AddSeparator()
+			mQuit := systray.AddMenuItem("Выход", "Закрыть lanmesh")
+			go func() {
+				for {
+					select {
+					case <-mOpen.ClickedCh:
+						// Показать/поднять окно на UI-потоке WebView2 (SetForegroundWindow
+						// корректно отрабатывает только с потока-владельца окна).
+						w.Dispatch(func() {
+							procShowWindow.Call(hwnd, swRestore)
+							procSetForeground.Call(hwnd)
+						})
+					case <-mQuit.ClickedCh:
+						w.Terminate() // разблокирует w.Run() в main → корректное завершение
+						systray.Quit()
+						return
+					}
+				}
+			}()
+		}, func() {})
+	}()
 }
 
 func handleState(w http.ResponseWriter, r *http.Request) {
