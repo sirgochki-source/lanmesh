@@ -106,13 +106,21 @@ export function renderView(state, mode, view, histories = {}, activeNetTag, rate
 const initial = (name) => dispName((name || 'у').trim().charAt(0).toUpperCase());
 // Цвет аватара — детерминированно по хвосту vip, чтобы у одного узла он не «прыгал» между рендерами.
 const avClass = (vip) => 'av' + (['m', 'k', 's', 'd'][(parseInt(vip.replace(/\D/g, '').slice(-2) || '0', 10)) % 4]);
-const barsHtml = (signals) => {
-  const on = (signals || []).filter(Boolean).length, total = Math.max(1, (signals || []).length);
-  return '<span class="bars">' + Array.from({ length: 4 }, (_, i) =>
-    `<i class="${i < Math.round(on / total * 4) ? 'on' : ''}"></i>`).join('') + '</span>';
-};
+// peerSignalDots — через какие сигналки виден ПИР: точка на каждый сервер, зелёная (up)
+// если пир виден через него (peer.signals[i]), серая (off) если нет. Хост берём из
+// net.signals[i] (тот же порядок signalURLs). «Не виден» — нейтральный серый, не красный:
+// это не ошибка сервера (красный оставлен индикатору сети), а просто «пира там нет».
+export function peerSignalDots(peerSignals, netSignals = []) {
+  const ps = peerSignals || [];
+  if (!ps.length) return '';
+  const dots = ps.map((on, i) => {
+    const host = (netSignals[i] && netSignals[i].host) || ('сигналка ' + (i + 1));
+    return `<i class="sig ${on ? 'up' : 'off'}" title="${esc(host)}: ${on ? 'виден' : 'не виден'}"></i>`;
+  }).join('');
+  return `<span class="sigdots" title="через какие сигналки виден пир">${dots}</span>`;
+}
 
-export function peerRowDetailed(peer, history = []) {
+export function peerRowDetailed(peer, history = [], netSignals = []) {
   const q = quality(peer.status, peer.rttMs ?? -1, history);
   const badge = peer.status === 'connecting' ? '<span class="badge conn">подключение</span>'
     : `<span class="badge ${esc(peer.status)}">${esc(peer.status)}</span>`;
@@ -122,7 +130,7 @@ export function peerRowDetailed(peer, history = []) {
     + `<span class="who"><span class="nm">${dispName(peer.name || 'узел')}</span>`
     + `<span class="ip mono copyable" data-copy="${esc(peer.vip)}" title="скопировать IP">${esc(peer.vip)}</span></span>`
     + `${spark}<span class="grow"></span>`
-    + `${barsHtml(peer.signals)}${badge}${pngHtml(peer)}</div>`;
+    + `${peerSignalDots(peer.signals, netSignals)}${badge}${pngHtml(peer)}</div>`;
 }
 
 export function qualityTile(net) {
@@ -152,7 +160,7 @@ export function renderDetailed(state, view, histories = {}, activeNetTag, rates 
   }
   if (view === 'traffic') return renderTraffic(net, rates);
   const peers = (net.peers || []).slice().sort(cmpVip);
-  const rows = peers.map(p => peerRowDetailed(p, histories[p.vip] || [])).join('') || '<div class="empty">Пока никого.</div>';
+  const rows = peers.map(p => peerRowDetailed(p, histories[p.vip] || [], net.signals)).join('') || '<div class="empty">Пока никого.</div>';
   const traf = netTrafficTotals(net, rates);
   return `<div class="dmain"><div class="dhd"><div><div class="title">${dispName(net.name)}</div>`
     + `<div class="sub">${peers.length} ${plural(peers.length, 'участник', 'участника', 'участников')}</div>`

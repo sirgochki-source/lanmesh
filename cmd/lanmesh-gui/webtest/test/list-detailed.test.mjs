@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { peerRowDetailed, renderDetailed } from '../../web/views/list.js';
+import { peerRowDetailed, renderDetailed, peerSignalDots } from '../../web/views/list.js';
 
 test('peerRowDetailed: аватар-инициал, бейдж статуса, пинг, vip', () => {
   const s = peerRowDetailed({ name: 'Мурад', vip: '25.44.12.9', status: 'direct', rttMs: 18, signals: [true] }, []);
@@ -33,6 +33,25 @@ test('peerRowDetailed экранирует peer.status в бейдже (клас
   const s = peerRowDetailed({ name: 'X', vip: '1', status: 'direct"><script>1</script>', rttMs: 5 }, []);
   assert.ok(!s.includes('<script>'));
   assert.match(s, /badge direct&quot;&gt;&lt;script&gt;1&lt;\/script&gt;/);
+});
+
+test('peerSignalDots: зелёная если пир виден через сервер, серая если нет, хост в подсказке', () => {
+  const s = peerSignalDots([true, false], [{ host: 'eu-1', up: true }, { host: 'us-1', up: false }]);
+  assert.match(s, /class="sig up"/);
+  assert.match(s, /class="sig off"/);       // «не виден» — нейтральный серый, не красный
+  assert.doesNotMatch(s, /class="sig down"/);
+  assert.match(s, /eu-1: виден/);
+  assert.match(s, /us-1: не виден/);
+});
+test('peerSignalDots: пустой список — ничего не рисуем', () => {
+  assert.equal(peerSignalDots([], []), '');
+  assert.equal(peerSignalDots(undefined), '');
+});
+test('peerRowDetailed: показывает точки сигналок пира по net.signals', () => {
+  const s = peerRowDetailed({ name: 'A', vip: '1', status: 'direct', rttMs: 10, signals: [true, false] }, [], [{ host: 'eu-1' }, { host: 'us-1' }]);
+  assert.match(s, /class="sig up"/);
+  assert.match(s, /class="sig off"/);
+  assert.match(s, /eu-1: виден/);
 });
 
 test('renderDetailed traffic — делегирует в renderTraffic (Phase 3, больше не заглушка)', () => {

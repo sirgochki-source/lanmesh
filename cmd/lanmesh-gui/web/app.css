@@ -354,18 +354,6 @@ input:focus { outline: none; border-color: var(--accent); }
 .avs { background: linear-gradient(135deg,#c4b5fd,#a78bfa); }
 .avd { background: linear-gradient(135deg,#fcd34d,#f59e0b); color: #422006; }
 
-/* ---------- сигнал-бары (доля отвечающих сигнальных серверов) ---------- */
-.bars { display: inline-flex; gap: 2px; align-items: flex-end; height: 13px; flex: none; }
-.bars i { width: 3px; border-radius: 1px; background: #2a3342; display: block; }
-.bars i.on { background: var(--accent-2); }
-/* высота по эскалации (WiFi-барчики) — в мокапе задан только контейнер (height:13px,
-   align-items:flex-end), сами полоски высоту не получают; добавляем ступени, иначе
-   «включённые» полоски были бы нулевой высоты и невидимы */
-.bars i:nth-child(1) { height: 40%; }
-.bars i:nth-child(2) { height: 60%; }
-.bars i:nth-child(3) { height: 80%; }
-.bars i:nth-child(4) { height: 100%; }
-
 /* ---------- бейдж статуса ---------- */
 .badge { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; flex: none; }
 .badge.direct { background: rgba(55,245,197,.13); color: var(--accent-2); }
