@@ -85,6 +85,20 @@ test('netCardCompact: при наличии signals рисует точки по
   assert.doesNotMatch(s, /🟢|🟡/);      // эмодзи-запаска не используется, когда есть signals
 });
 
+test('netCardCompact: неактивная сеть — серая карточка «отключено», Выйти без Пригласить', () => {
+  const s = netCardCompact({ name: 'myteam', tag: 't', inactive: true, peers: [] });
+  assert.match(s, /netcard inactive/);
+  assert.match(s, /отключено/);
+  assert.match(s, /data-leave="t"/);
+  assert.doesNotMatch(s, /data-invite/);   // приглашать в отключённую сеть нельзя
+});
+test('renderCompact: сохранённые сети не пропадают после отключения — серые карточки', () => {
+  const s = renderCompact({ running: false, networks: [], savedNets: [{ tag: 't', name: 'myteam' }] });
+  assert.match(s, /netcard inactive/);
+  assert.match(s, /myteam/);
+  assert.match(s, /отключено/);
+});
+
 test('netCardCompact: пустая сеть даёт подсказку с именем сети', () => {
   const s = netCardCompact({ name: 'myteam', tag: 't', peers: [] });
   assert.match(s, /Пока никого/);

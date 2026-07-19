@@ -410,9 +410,19 @@ func installFrame(hwnd uintptr) {
 func handleState(w http.ResponseWriter, r *http.Request) {
 	st := sess.State()
 
+	// savedNet — сохранённая сеть для показа неактивной карточкой, когда узел отключён
+	// (сеть не пропадает из списка, а становится серой). Тег совпадает с NetworkView.Tag
+	// у активной сети — фронт по нему сопоставляет активную/неактивную.
+	type savedNet struct {
+		Name string `json:"name"`
+		Tag  string `json:"tag"`
+	}
 	cfgMu.Lock()
 	sendLogs := cfg.sendLogs()
-	savedNets := len(cfg.Networks) // для кнопки «Подключиться» после отключения
+	savedList := make([]savedNet, 0, len(cfg.Networks))
+	for _, p := range cfg.Networks {
+		savedList = append(savedList, savedNet{Name: p.Name, Tag: netTag(p.Name, p.Password)})
+	}
 	cfgSignals := append([]string(nil), cfg.Signals...)
 	cfgRelay := ""
 	if cfg.Relay != nil {
@@ -425,11 +435,12 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 	// адреса (плейсхолдеры) намеренно не раскрываем — управляем только своими.
 	out := struct {
 		app.StateView
-		SendLogs      bool     `json:"sendLogs"`
-		SavedNetworks int      `json:"savedNetworks"`
-		CfgSignals    []string `json:"cfgSignals"`
-		CfgRelay      string   `json:"cfgRelay"`
-	}{StateView: st, SendLogs: sendLogs, SavedNetworks: savedNets, CfgSignals: cfgSignals, CfgRelay: cfgRelay}
+		SendLogs      bool       `json:"sendLogs"`
+		SavedNetworks int        `json:"savedNetworks"`
+		SavedNets     []savedNet `json:"savedNets"`
+		CfgSignals    []string   `json:"cfgSignals"`
+		CfgRelay      string     `json:"cfgRelay"`
+	}{StateView: st, SendLogs: sendLogs, SavedNetworks: len(savedList), SavedNets: savedList, CfgSignals: cfgSignals, CfgRelay: cfgRelay}
 	writeJSON(w, out, http.StatusOK)
 }
 

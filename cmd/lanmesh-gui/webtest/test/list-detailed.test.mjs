@@ -51,7 +51,7 @@ test('renderDetailed traffic — делегирует в renderTraffic (Phase 3,
 
 test('renderDetailed traffic — без активных сетей ведёт себя как остальные виды (подсказка, не падает)', () => {
   const st = { running: true, selfEndpoint: 'x', networks: [] };
-  assert.match(renderDetailed(st, 'traffic', {}), /Нет активных сетей/);
+  assert.match(renderDetailed(st, 'traffic', {}), /Нет сохранённых сетей/);
 });
 
 test('renderDetailed settings — делегирует в renderSettings (Task 13)', () => {
@@ -106,7 +106,15 @@ test('renderDetailed list: плитка «Трафик» без данных —
 
 test('renderDetailed list: без активных сетей — подсказка, не падает', () => {
   const st = { running: true, selfEndpoint: 'x', networks: [] };
-  assert.match(renderDetailed(st, 'list', {}), /Нет активных сетей/);
+  assert.match(renderDetailed(st, 'list', {}), /Нет сохранённых сетей/);
+});
+
+test('renderDetailed: неактивная (отключённая) сеть — серый заголовок + подсказка подключиться', () => {
+  const st = { running: false, networks: [], savedNets: [{ tag: 't', name: 'myteam' }] };
+  const s = renderDetailed(st, 'list', {}, 't');
+  assert.match(s, /myteam/);
+  assert.match(s, /отключено/);
+  assert.match(s, /Подключиться/);
 });
 
 test('renderDetailed list: заголовок сети склоняет «участников» по числу', () => {

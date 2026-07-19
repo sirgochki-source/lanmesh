@@ -196,6 +196,16 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
 .net-name { font-size: 14.5px; font-weight: 600; color: var(--fg); white-space: nowrap; }
 .cnt { color: var(--fg-mut); font-size: 12px; }
 
+/* неактивная (сохранённая, но отключённая) сеть — не удаляется, а становится серой */
+.netcard.inactive { opacity: .5; }
+.netcard.inactive .net-name { color: var(--fg-mut); }
+.off-badge {
+  font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+  padding: 2px 7px; border-radius: 999px; background: rgba(255,255,255,.06); color: var(--fg-mut); flex: none;
+}
+.netitem.off { opacity: .5; }
+.netitem.off .pdot { background: var(--fg-dim); box-shadow: none; }
+
 /* ---------- вертикальные строки-карточки участников (без аватарок) ---------- */
 .rows { padding: 2px 11px 11px; display: flex; flex-direction: column; gap: 5px; }
 .row {

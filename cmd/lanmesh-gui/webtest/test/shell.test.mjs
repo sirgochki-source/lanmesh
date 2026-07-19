@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusPill, pickMode, renderHeader, renderRail, connBtn } from '../../web/views/shell.js';
+import { statusPill, pickMode, renderHeader, renderRail, connBtn, displayNets } from '../../web/views/shell.js';
 
 test('statusPill отражает состояние', () => {
   assert.equal(statusPill({ running: false, networks: [] }).cls, 'off');
@@ -41,6 +41,21 @@ test('connBtn: офлайн без сохранённых сетей → кно�
 test('renderHeader: содержит кнопку подключения по состоянию', () => {
   assert.match(renderHeader({ running: true, selfEndpoint: 'x', networks: [] }, 'compact'), /data-act="disconnect"/);
   assert.match(renderHeader({ running: false, savedNetworks: 1, networks: [] }, 'detailed'), /data-act="reconnect"/);
+});
+
+test('displayNets: сохранённая, но не активная сеть → inactive-заглушка', () => {
+  const out = displayNets({ networks: [{ tag: 'a', name: 'Alpha', peers: [] }], savedNets: [{ tag: 'a', name: 'Alpha' }, { tag: 'b', name: 'Beta' }] });
+  assert.equal(out.length, 2);
+  assert.equal(out.find(n => n.tag === 'a').inactive, undefined); // активная — как есть
+  assert.equal(out.find(n => n.tag === 'b').inactive, true);      // сохранённая, не активная
+});
+test('displayNets: без savedNets — только активные (обратная совместимость)', () => {
+  assert.deepEqual(displayNets({ networks: [{ tag: 'a', name: 'A' }] }).map(n => n.tag), ['a']);
+});
+test('renderRail: неактивная сеть помечена .off', () => {
+  const html = renderRail({ networks: [], savedNets: [{ tag: 'b', name: 'Beta' }] }, 'list', null);
+  assert.match(html, /class="netitem on off"|netitem[^"]*off/);
+  assert.match(html, /Beta/);
 });
 
 test('renderRail: помечает активную сеть .on и эмитит data-net', () => {

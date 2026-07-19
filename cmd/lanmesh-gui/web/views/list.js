@@ -6,6 +6,7 @@ import { quality } from '../lib/quality.js';
 import { sparklineSVG } from '../lib/sparkline.js';   // реально используется с Task 12 (накопление истории)
 import { renderSettings, renderSettingsCompact } from './settings.js';
 import { renderTraffic, netTrafficTotals } from './traffic.js';
+import { displayNets } from './shell.js';
 
 const pngHtml = (peer) => {
   if (peer.status === 'connecting') return '<span class="png conn">подключение…</span>';
@@ -45,6 +46,14 @@ export function peerRowCompact(peer) {
 }
 
 export function netCardCompact(net) {
+  // Неактивная (сохранённая, но отключённая) сеть: серая карточка «отключено», без
+  // участников; «Выйти» (забыть сеть) остаётся, «Пригласить» — нет (нужен поднятый узел).
+  if (net.inactive) {
+    return `<div class="netcard inactive"><div class="netcard-hd">`
+      + `<span class="net-name">${dispName(net.name)}</span> <span class="off-badge">отключено</span>`
+      + `<span class="grow"></span>`
+      + `<button class="btn-ghost" data-leave="${esc(net.tag)}">Выйти</button></div></div>`;
+  }
   const peers = (net.peers || []).slice().sort(cmpVip);
   const body = peers.length
     ? peers.map(peerRowCompact).join('')
@@ -61,7 +70,7 @@ export function netCardCompact(net) {
 
 export function renderCompact(state, view = 'list') {
   if (view === 'settings') return renderSettingsCompact(state);
-  const nets = state.networks || [];
+  const nets = displayNets(state); // сохранённые сети не пропадают после отключения — серые карточки
   const warn = state.running && !state.selfEndpoint
     ? '<div class="warnbox"><b>Внешний адрес неизвестен</b> — до тебя не достучатся. '
       + 'Обычно сеть режет исходящий UDP.</div>' : '';
@@ -130,12 +139,17 @@ export function qualityTile(net) {
 const soon = (text) => `<div class="dmain"><div class="soon">${text}</div></div>`;
 
 export function renderDetailed(state, view, histories = {}, activeNetTag, rates = {}) {
-  const nets = state.networks || [];
+  const nets = displayNets(state); // включает сохранённые-неактивные (после отключения)
   const net = nets.find(n => n.tag === activeNetTag) || nets[0];
   if (view === 'settings') return renderSettings(state);
-  // 'traffic' ожидает реальную сеть, а не строит «сеть по умолчанию» на пустом месте;
-  // при отсутствии сетей — та же подсказка, что и у списка.
-  if (!net) return soon('Нет активных сетей. Добавь сеть в компактном режиме.');
+  if (!net) return soon('Нет сохранённых сетей. Добавь сеть в компактном режиме.');
+  // Неактивная (отключённая) сеть: серый заголовок «отключено» + подсказка подключиться,
+  // без плиток и участников. Раньше traffic ожидает реальную сеть — проверяем ДО него.
+  if (net.inactive) {
+    return `<div class="dmain"><div class="dhd"><div><div class="title">${dispName(net.name)}</div>`
+      + `<div class="sub"><span class="off-badge">отключено</span></div></div></div>`
+      + `<div class="soon">Сеть сохранена, но узел отключён. Нажми «Подключиться» вверху, чтобы поднять её.</div></div>`;
+  }
   if (view === 'traffic') return renderTraffic(net, rates);
   const peers = (net.peers || []).slice().sort(cmpVip);
   const rows = peers.map(p => peerRowDetailed(p, histories[p.vip] || [])).join('') || '<div class="empty">Пока никого.</div>';

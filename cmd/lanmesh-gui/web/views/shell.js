@@ -5,6 +5,18 @@ import { dispName as escName, esc } from '../lib/sanitize.js';
 
 export function pickMode(width) { return width < 620 ? 'compact' : 'detailed'; }
 
+// displayNets — сети для показа: активные (state.networks) как есть; сохранённые, но
+// не активные (после «Отключиться») — заглушкой inactive:true, чтобы сеть не пропадала
+// из списка, а становилась серой. Порядок: по сохранённым, затем активные без сохранения.
+export function displayNets(state) {
+  const active = new Map((state.networks || []).map(n => [n.tag, n]));
+  const saved = state.savedNets || [];
+  const out = saved.map(s => active.get(s.tag) || { name: s.name, tag: s.tag, inactive: true, peers: [], signals: [] });
+  const savedTags = new Set(saved.map(s => s.tag));
+  for (const n of state.networks || []) if (!savedTags.has(n.tag)) out.push(n);
+  return out;
+}
+
 export function statusPill(state) {
   if (!state.running) return { cls: 'off', text: 'не подключено' };
   const nets = state.networks || [];
@@ -50,12 +62,12 @@ export function renderHeader(state, mode) {
 
 // Рейл подробного режима: список сетей + навигация видов.
 export function renderRail(state, activeView, activeNetTag) {
-  const nets = state.networks || [];
+  const nets = displayNets(state); // включает сохранённые-неактивные (после отключения)
   // Если активный тег не задан или не совпадает ни с одной сетью — подсвечиваем первую.
   const activeTag = nets.some(n => n.tag === activeNetTag) ? activeNetTag : (nets[0] && nets[0].tag);
   const netsHtml = nets.map(n =>
-    `<div class="netitem ${n.tag === activeTag ? 'on' : ''}" data-view="list" data-net="${esc(n.tag)}"><span class="pdot"></span>${escName(n.name)}`
-    + `<span class="cnt">${(n.peers || []).length}</span></div>`).join('');
+    `<div class="netitem ${n.tag === activeTag ? 'on' : ''}${n.inactive ? ' off' : ''}" data-view="list" data-net="${esc(n.tag)}"><span class="pdot"></span>${escName(n.name)}`
+    + `<span class="cnt">${n.inactive ? '' : (n.peers || []).length}</span></div>`).join('');
   const nav = [['list', '▤', 'Список'], ['traffic', '▮', 'Трафик'], ['settings', '⚙', 'Настройки']]
     .map(([v, ic, t]) => `<div class="n ${v === activeView ? 'on' : ''}" data-view="${v}">${ic}&nbsp; ${t}</div>`).join('');
   return `<div class="rail"><div class="brand">lan<b>mesh</b></div>${netsHtml}<div class="nav">${nav}</div></div>`;
