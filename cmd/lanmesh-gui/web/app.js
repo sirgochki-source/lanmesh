@@ -252,9 +252,15 @@ function toggleThemePop(btn) {
   pop.id = 'themepop'; pop.className = 'theme-pop';
   pop.innerHTML = renderThemePopover(document.documentElement.dataset.theme || 'mint');
   document.body.appendChild(pop);
-  const r = btn.getBoundingClientRect();          // позиционируем под кнопкой, правым краем к ней
-  pop.style.top = (r.bottom + 8) + 'px';
-  pop.style.right = Math.max(8, innerWidth - r.right) + 'px';
+  // Клампим поповер ЦЕЛИКОМ в окно, чтобы не обрезался у краёв: правый край у кнопки,
+  // но не вылезая; по вертикали под кнопкой, а если не помещается — прижимаем к низу.
+  const r = btn.getBoundingClientRect();
+  const pw = pop.offsetWidth, ph = pop.offsetHeight;
+  const left = Math.max(8, Math.min(r.right - pw, innerWidth - pw - 8));
+  let top = r.bottom + 8;
+  if (top + ph > innerHeight - 8) top = Math.max(8, innerHeight - ph - 8);
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
 }
 document.addEventListener('click', (e) => {
   const tbtn = e.target.closest('[data-act="theme-menu"]');
