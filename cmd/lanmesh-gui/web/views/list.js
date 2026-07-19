@@ -170,7 +170,8 @@ export function renderDetailed(state, view, histories = {}, activeNetTag, rates 
   // без плиток и участников. Раньше traffic ожидает реальную сеть — проверяем ДО него.
   if (net.inactive) {
     return `<div class="dmain"><div class="dhd"><div><div class="title">${dispName(net.name)}</div>`
-      + `<div class="sub"><span class="off-badge">отключено</span></div></div></div>`
+      + `<div class="sub"><span class="off-badge">отключено</span></div></div><span class="grow"></span>`
+      + `<button class="btn-ghost" data-leave="${esc(net.tag)}">Выйти</button></div>`
       + `<div class="soon">Сеть сохранена, но узел отключён. Нажми «Подключиться» вверху, чтобы поднять её.</div></div>`;
   }
   if (view === 'traffic') return renderTraffic(net, rates);
@@ -180,7 +181,8 @@ export function renderDetailed(state, view, histories = {}, activeNetTag, rates 
   return `<div class="dmain"><div class="dhd"><div><div class="title">${dispName(net.name)}</div>`
     + `<div class="sub">${peers.length} ${plural(peers.length, 'участник', 'участника', 'участников')}</div>`
     + `${signalDots(net.signals, true)}</div><span class="grow"></span>`
-    + `<button class="btn-ghost" data-invite="${esc(net.tag)}">⧉ Пригласить</button></div>`
+    + `<button class="btn-ghost" data-invite="${esc(net.tag)}">⧉ Пригласить</button>`
+    + `<button class="btn-ghost" data-leave="${esc(net.tag)}">Выйти</button></div>`
     + `<div class="tiles">${qualityTile(net)}`
     + `<div class="tile"><div class="k">Трафик</div><div class="big">${fmtBytes(traf.rx + traf.tx)}</div>`
     + `<div class="sub">${fmtBytes(traf.rate)}/с</div></div>`

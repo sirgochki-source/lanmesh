@@ -88,6 +88,17 @@ test('renderDetailed settings — делегирует в renderSettings (Task 1
   assert.doesNotMatch(s, /скоро/i);
 });
 
+test('renderDetailed: в шапке сети есть кнопки Пригласить и Выйти', () => {
+  const st = { running: true, selfEndpoint: 'x', networks: [{ name: 'n', tag: 't', signals: [], peers: [] }] };
+  const s = renderDetailed(st, 'list', {});
+  assert.match(s, /data-invite="t"/);
+  assert.match(s, /data-leave="t"/);
+});
+test('renderDetailed: неактивную сеть тоже можно «Выйти» (забыть)', () => {
+  const s = renderDetailed({ running: false, networks: [], savedNets: [{ tag: 't', name: 'myteam' }] }, 'list', {}, 't');
+  assert.match(s, /data-leave="t"/);
+});
+
 test('renderDetailed list содержит плитку качества', () => {
   const st = {
     running: true, selfEndpoint: 'x', networks: [{
