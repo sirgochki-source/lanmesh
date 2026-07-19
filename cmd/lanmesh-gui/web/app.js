@@ -17,6 +17,7 @@ let lastState = { running: false, networks: [] };
 // {vip: number[]} — история пинга для спарклайнов detailed-режима, наполняется в ingest().
 const rttHistory = new RttHistory(40);
 let prevPeers = [];                                 // предыдущий плоский снимок пиров, для diffPeers
+let prevRunning = false;                            // было ли running в прошлом опросе — чтобы не тостить на вкл/выкл
 const histSnapshot = () => {
   const o = {};
   for (const vip of rttHistory.map.keys()) o[vip] = rttHistory.get(vip);
@@ -50,11 +51,15 @@ function ingest(state) {
   for (const p of peers) rttHistory.push(p.vip, p.rttMs ?? -1);
   rttHistory.prune(peers.map(p => p.vip));
   const { joined, left } = diffPeers(prevPeers, peers);
-  if (prevPeers.length) {                          // не тостим первый снимок (стартовый состав)
+  // Тостим приход/уход только ВНУТРИ активной сессии (был онлайн и остался): иначе
+  // намеренное «Отключиться» (running:true→false) сыпало бы «X вышел» по всем пирам, а
+  // «Подключиться» — «X в сети». prevPeers.length убирает ещё и стартовый снимок.
+  if (prevPeers.length && prevRunning && state.running) {
     for (const p of joined) toast(`${dispName(p.name)} в сети`, 'in');
     for (const p of left) toast(`${dispName(p.name)} вышел`, 'out');
   }
   prevPeers = peers;
+  prevRunning = state.running;
 
   const curBytes = flattenBytes(state);
   const now = Date.now();
