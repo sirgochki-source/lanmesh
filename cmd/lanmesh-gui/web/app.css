@@ -25,7 +25,10 @@
   --relay:       #8fbaff;                        /* relay (семантика, не тема) */
   --ping-ok:     #ffcf5c;                        /* средний пинг / connecting */
   --ping-bad:    #ff8080;                        /* высокий пинг */
-  --sig-on:      #35c66b;                        /* сигналка «на связи» / пир виден — статус, НЕ тема */
+  --sig-on:      #35c66b;                        /* «на связи» / подключено / аптайм — статус, НЕ тема */
+  --sig-soft: color-mix(in srgb, var(--sig-on) 13%, transparent);  /* подложка статус-pill */
+  --sig-line: color-mix(in srgb, var(--sig-on) 30%, transparent);  /* граница статус-pill */
+  --sig-fg:   color-mix(in srgb, var(--sig-on) 48%, white);        /* текст статуса (pill, аптайм) */
   /* текст */
   --fg:      #e2e7ef;  --fg-mut: #6f7a8a;  --fg-dim: #57616f;
   /* форма */
@@ -103,10 +106,10 @@ html.native .hd { user-select: none; -webkit-user-select: none; }
   display: inline-flex; align-items: center; gap: 5px;
 }
 .pill .pdot { width: 5px; height: 5px; border-radius: 50%; flex: none; }
-.pill.on {
-  color: var(--accent-fg); background: var(--accent-soft); border: 1px solid var(--accent-line);
+.pill.on {  /* «N сетей» / подключено — статус, фиксированный зелёный, не тема */
+  color: var(--sig-fg); background: var(--sig-soft); border: 1px solid var(--sig-line);
 }
-.pill.on .pdot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+.pill.on .pdot { background: var(--sig-on); box-shadow: 0 0 6px var(--sig-on); }
 .pill.warn {
   color: #ffe7b0; background: rgba(255,207,92,.12); border: 1px solid rgba(255,207,92,.28);
 }
@@ -234,7 +237,7 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
 }
 .self .k { display: block; }
 .self .v { display: block; font-size: 11.5px; color: #cdd5e1; font-weight: 600; }
-.self .v.up { color: var(--accent-2); }
+.self .v.up { color: var(--sig-fg); }  /* аптайм — статус, фиксированный зелёный, не тема */
 
 /* ---------- карточка сети ---------- */
 .netcard {
