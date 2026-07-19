@@ -107,6 +107,9 @@ document.addEventListener('click', (e) => {
   // как модульное состояние (как в detailed), поэтому переживает опросы.
   if (act === 'show-settings') { activeView = 'settings'; render(lastState); return; }
   if (act === 'show-list') { activeView = 'list'; render(lastState); return; }
+  // Кнопки своей рамки окна (нативное приложение): свернуть / закрыть-в-трей.
+  const win = e.target.closest('[data-win]')?.dataset.win;
+  if (win) { window.lmWindow && window.lmWindow(win); return; }
   // Клик по сети в рейле: выбираем её активной и переключаемся на список
   // (элемент несёт и data-net, и data-view="list" — обрабатываем здесь и выходим,
   // чтобы не сработала ещё раз ветка data-view ниже).
@@ -194,6 +197,9 @@ document.addEventListener('change', async (e) => {
 // Отзывчивость: если пользователь не выбирал режим руками — следуем ширине окна.
 new ResizeObserver(() => { if (!manual) setMode(pickMode(innerWidth)); render(lastState); }).observe(document.documentElement);
 
+// В нативном окне (webview2.Bind даёт window.lmWindow) — своя рамка: показываем
+// кнопки окна (свернуть/закрыть). В браузере/mock их нет.
+if (window.lmWindow) document.documentElement.classList.add('native');
 setMode(mode);
 poll();
 setInterval(poll, POLL_MS);

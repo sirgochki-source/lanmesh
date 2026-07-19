@@ -16,16 +16,22 @@ export function statusPill(state) {
 
 export function renderHeader(state, mode) {
   const p = statusPill(state);
+  // Кнопки своей рамки (frameless-окно) — видны только в нативном приложении
+  // (класс .native на <html>), в браузере/mock скрыты. Свернуть / закрыть-в-трей.
+  const win = `<button class="wbtn" data-win="minimize" title="Свернуть">–</button>`
+    + `<button class="wbtn wbtn-close" data-win="close" title="Скрыть в трей">✕</button>`;
   // detailed: рейл уже показывает бренд "lanmesh" — не дублируем вордмарк в шапке.
   if (mode === 'detailed') {
     return `<div class="hd"><span class="grow"></span>`
       + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>`
-      + `<button class="iconbtn" data-act="collapse" title="Свернуть">⤡</button></div>`;
+      + `<button class="iconbtn" data-act="collapse" title="Компактный режим">⤡</button>`
+      + win + `</div>`;
   }
   return `<div class="hd"><span class="wm">lan<b>mesh</b></span><span class="grow"></span>`
     + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>`
     + `<button class="iconbtn" data-act="show-settings" title="Настройки">⚙</button>`
-    + `<button class="iconbtn" data-act="expand" title="Развернуть">⤢</button></div>`;
+    + `<button class="iconbtn" data-act="expand" title="Подробный режим">⤢</button>`
+    + win + `</div>`;
 }
 
 // Рейл подробного режима: список сетей + навигация видов.
