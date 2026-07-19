@@ -39,3 +39,6 @@ docs/*.pdf
 .superpowers/
 smokerun/
 quittest/
+
+# локальный конфиг Deno
+deploy/deno/deno.jsonc

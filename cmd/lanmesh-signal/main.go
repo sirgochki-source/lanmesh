@@ -35,6 +35,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -242,6 +243,14 @@ func main() {
 	tlsCert := flag.String("tls-cert", "", "файл сертификата (fullchain.pem); без него HTTPS не поднимается")
 	tlsKey := flag.String("tls-key", "", "файл приватного ключа (privkey.pem)")
 	flag.Parse()
+
+	// PORT из окружения (Cloud Run, Render, Railway и т.п.): платформа сама
+	// терминирует HTTPS и пробрасывает нам обычный HTTP на этот порт. В этом режиме
+	// слушаем только его и не поднимаем свой TLS — сертификатами занимается платформа.
+	if p := os.Getenv("PORT"); p != "" {
+		*addr = ":" + p
+		*tlsAddr = ""
+	}
 
 	reg := newRegistry()
 	go func() {

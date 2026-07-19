@@ -7,12 +7,13 @@
 package defaults
 
 // SignalURLs — ВСЕ сигналки сразу: клиент объявляется в каждой и сливает списки
-// участников (а не переключается между ними). Cloudflare Worker и/или свой сервер
-// cmd/lanmesh-signal (25557 под TLS, 25556 плайнтекстом для старых сборок).
+// участников (а не переключается между ними). Только HTTPS: плайнтекстовый HTTP
+// светит тег сети по дороге (а тег — ключ на чтение чужой диагностики через /logs),
+// поэтому в дефолте его не держим. Cloudflare Worker, свой cmd/lanmesh-signal под
+// TLS и/или serverless-порт (Deno Deploy — см. deploy/deno).
 var SignalURLs = []string{
 	"https://your-worker.example.workers.dev",
 	"https://your-server.example.com:25557",
-	"http://your-server.example.com:25556",
 }
 
 // RelayAddr — ретранслятор (cmd/lanmesh-relay) для пиров за симметричным NAT
