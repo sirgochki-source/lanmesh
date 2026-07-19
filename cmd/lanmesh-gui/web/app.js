@@ -5,6 +5,7 @@ import { collectPeers } from './lib/collect.js';
 import { dispName } from './lib/sanitize.js';
 import { parseInvite } from './lib/invite.js';
 import { computeRates } from './lib/traffic.js';
+import { srvRow } from './views/settings.js';
 
 const POLL_MS = 1300;
 let mode = localStorage.getItem('lm-mode') || pickMode(innerWidth);
@@ -79,8 +80,9 @@ function render(state, fromPoll = false) {
   document.getElementById('header').innerHTML = renderHeader(state, mode);
   document.getElementById('rail').innerHTML = mode === 'detailed' ? renderRail(state, activeView, activeNetTag) : '';
   const viewEl = document.getElementById('view');
-  if (fromPoll && viewEl.contains(document.activeElement)) {
-    // пропускаем: пользователь взаимодействует с формой внутри #view
+  if (fromPoll && (activeView === 'settings' || viewEl.contains(document.activeElement))) {
+    // пропускаем: настройки — редактируемая форма (список серверов), опрос не должен
+    // стирать добавленные/удалённые строки и введённый текст; либо пользователь печатает
   } else if (window.renderView) {
     viewEl.innerHTML = window.renderView(state, mode, activeView, histSnapshot(), activeNetTag, ratesSnapshot());
   }
@@ -148,6 +150,15 @@ document.addEventListener('input', (e) => {
 document.addEventListener('click', async (e) => {
   const t = e.target;
   const act = t.closest('[data-act]')?.dataset.act;
+  // Отключиться (в офлайн, не выходя из сетей) / Подключиться (переподнять сохранённые).
+  if (act === 'disconnect' || act === 'reconnect') {
+    const btn = t.closest('[data-act]');
+    if (btn) { btn.disabled = true; const l = btn.querySelector('.lbl'); if (l) l.textContent = act === 'disconnect' ? 'Отключаю…' : 'Подключаю…'; }
+    const r = await postJSON('/api/' + act);
+    if (!r.ok) { const j = await r.json().catch(() => ({})); flashChip('Ошибка: ' + (j.error || r.status)); }
+    poll(); // состояние (running) обновит шапку и кнопку; финал добьёт регулярный опрос
+    return;
+  }
   if (act === 'add-toggle') {
     const b = t.closest('.addcard').querySelector('.add-body');
     b.hidden = !b.hidden;
@@ -171,12 +182,29 @@ document.addEventListener('click', async (e) => {
     flashChip(j.tag ? 'Диагностика отправлена · код ' + j.tag : 'Ошибка диагностики');
     return;
   }
-  if (act === 'cfg-save') {
-    const signals = document.getElementById('s-signals').value.split('\n').map(s => s.trim()).filter(Boolean);
-    const relay = document.getElementById('s-relay').value.trim();
-    if (!signals.length) return; await postJSON('/api/settings', { signals, relay }); refreshView(); return;
+  if (act === 'sig-add') {
+    document.getElementById('sig-list')?.insertAdjacentHTML('beforeend', srvRow());
+    document.querySelector('#sig-list .srv-row:last-child .s-sig')?.focus();  // фокус в #view держит форму живой при опросе
+    return;
   }
-  if (act === 'cfg-reset') { await postJSON('/api/settings', { signals: [], relay: '' }); refreshView(); return; }
+  if (act === 'sig-del') { t.closest('.srv-row')?.remove(); return; }
+  if (act === 'cfg-save') {
+    const signals = [...document.querySelectorAll('#sig-list .s-sig')].map(i => i.value.trim()).filter(Boolean);
+    const relay = document.getElementById('s-relay').value.trim();
+    const r = await postJSON('/api/settings', { signals, relay });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); flashChip('Ошибка: ' + (j.error || r.status)); }
+    else flashChip('Настройки серверов сохранены');
+    return;
+  }
+  if (act === 'cfg-reset') {
+    await postJSON('/api/settings', { signals: [], relay: '' });
+    // Чистим форму на месте: в настройках опрос не перерисовывает #view, поэтому
+    // строки не пропадут сами — сбрасываем к одной пустой строке и пустому relay.
+    const list = document.getElementById('sig-list'); if (list) list.innerHTML = srvRow();
+    const relay = document.getElementById('s-relay'); if (relay) relay.value = '';
+    flashChip('Сброшено к стандартным серверам');
+    return;
+  }
   const inviteTag = t.closest('[data-invite]')?.dataset.invite;
   if (inviteTag != null) {
     const j = await (await fetch('/api/invite?tag=' + encodeURIComponent(inviteTag))).json();

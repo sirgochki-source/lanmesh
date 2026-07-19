@@ -22,7 +22,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -47,9 +46,6 @@ func netTag(name, password string) string {
 
 //go:embed web
 var webFS embed.FS
-
-//go:embed trayicon.ico
-var trayIcon []byte
 
 const (
 	listenAddr = "127.0.0.1:8737"
@@ -186,6 +182,7 @@ func main() {
 	mux.HandleFunc("/api/addnetwork", guard(handleAddNetwork))
 	mux.HandleFunc("/api/leavenetwork", guard(handleLeaveNetwork))
 	mux.HandleFunc("/api/disconnect", guard(handleDisconnect))
+	mux.HandleFunc("/api/reconnect", guard(handleReconnect))
 	mux.HandleFunc("/api/sendlogs", guard(handleSendLogs))
 	mux.HandleFunc("/api/senddiag", guard(handleSendDiag))
 	mux.HandleFunc("/api/diagnose", guard(handleDiagnose))
@@ -410,57 +407,29 @@ func installFrame(hwnd uintptr) {
 	procSetWindowLongPtr.Call(hwnd, uintptr(gwlpWndProc), newProc)
 }
 
-// startTray поднимает иконку lanmesh в системном трее с меню (Открыть окно / Выход)
-// на ОТДЕЛЬНОМ залоченном OS-потоке. systray.Run заводит собственное скрытое окно и
-// качает его сообщения на этом потоке — независимо от message-loop WebView2 на
-// главном потоке. На Windows systray не требует главного потока, поэтому конфликта
-// двух циклов сообщений нет: каждый обслуживает окна своего потока.
-func startTray(w webview2.WebView) {
-	hwnd := uintptr(w.Window()) // HWND панели — стабильный хэндл, не GC-указатель
-	go func() {
-		runtime.LockOSThread()
-		systray.Run(func() {
-			systray.SetIcon(trayIcon)
-			systray.SetTitle("lanmesh")
-			systray.SetTooltip("lanmesh — виртуальная локалка для игр")
-			mOpen := systray.AddMenuItem("Открыть окно", "Показать панель lanmesh")
-			systray.AddSeparator()
-			mQuit := systray.AddMenuItem("Выход", "Закрыть lanmesh")
-			go func() {
-				for {
-					select {
-					case <-mOpen.ClickedCh:
-						// Показать/поднять окно на UI-потоке WebView2 (SetForegroundWindow
-						// корректно отрабатывает только с потока-владельца окна).
-						w.Dispatch(func() {
-							procShowWindow.Call(hwnd, swRestore)
-							procSetForeground.Call(hwnd)
-						})
-					case <-mQuit.ClickedCh:
-						// Terminate() = PostQuitMessage(0) — кладёт WM_QUIT в очередь ВЫЗЫВАЮЩЕГО
-						// потока. Отсюда (поток трея) он ушёл бы мимо w.Run(), и процесс бы висел.
-						// Dispatch выполняет Terminate в главном потоке → WM_QUIT попадает в цикл
-						// w.Run(), тот возвращается, main завершается.
-						w.Dispatch(func() { w.Terminate() })
-						return
-					}
-				}
-			}()
-		}, func() {})
-	}()
-}
-
 func handleState(w http.ResponseWriter, r *http.Request) {
 	st := sess.State()
 
 	cfgMu.Lock()
 	sendLogs := cfg.sendLogs()
+	savedNets := len(cfg.Networks) // для кнопки «Подключиться» после отключения
+	cfgSignals := append([]string(nil), cfg.Signals...)
+	cfgRelay := ""
+	if cfg.Relay != nil {
+		cfgRelay = *cfg.Relay
+	}
 	cfgMu.Unlock()
 
+	// cfgSignals/cfgRelay — СВОИ (кастомные) адреса пользователя для показа и правки в
+	// настройках (по явной просьбе). Пусто = используются стандартные серверы. Дефолтные
+	// адреса (плейсхолдеры) намеренно не раскрываем — управляем только своими.
 	out := struct {
 		app.StateView
-		SendLogs bool `json:"sendLogs"`
-	}{StateView: st, SendLogs: sendLogs}
+		SendLogs      bool     `json:"sendLogs"`
+		SavedNetworks int      `json:"savedNetworks"`
+		CfgSignals    []string `json:"cfgSignals"`
+		CfgRelay      string   `json:"cfgRelay"`
+	}{StateView: st, SendLogs: sendLogs, SavedNetworks: savedNets, CfgSignals: cfgSignals, CfgRelay: cfgRelay}
 	writeJSON(w, out, http.StatusOK)
 }
 
@@ -682,6 +651,27 @@ func handleDisconnect(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 	sess.Stop()
+}
+
+// handleReconnect переподнимает все сохранённые сети — пара к handleDisconnect. Даёт
+// «Подключиться» после «Отключиться» без выхода из сетей и без перезапуска приложения
+// (AddNetwork после Stop сам поднимает узел заново).
+func handleReconnect(w http.ResponseWriter, r *http.Request) {
+	cfgMu.Lock()
+	nets := append([]NetProfile(nil), cfg.Networks...)
+	cfgMu.Unlock()
+
+	var errs []string
+	for _, p := range nets {
+		if err := sess.AddNetwork(p.Name, p.Password); err != nil {
+			errs = append(errs, p.Name+": "+err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		writeJSON(w, map[string]string{"error": strings.Join(errs, "; ")}, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true}, http.StatusOK)
 }
 
 // handleSettings читает и меняет список серверов (сигналки + relay). Менять можно

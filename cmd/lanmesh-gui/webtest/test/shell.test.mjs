@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusPill, pickMode, renderHeader, renderRail } from '../../web/views/shell.js';
+import { statusPill, pickMode, renderHeader, renderRail, connBtn } from '../../web/views/shell.js';
 
 test('statusPill отражает состояние', () => {
   assert.equal(statusPill({ running: false, networks: [] }).cls, 'off');
@@ -20,6 +20,27 @@ test('renderHeader (detailed) НЕ дублирует вордмарк — ре�
   assert.doesNotMatch(h, /class="wm"/);
   assert.match(h, /data-act="collapse"/);
   assert.match(h, /class="pill/);
+});
+
+test('connBtn: онлайн → «Отключиться» (disconnect)', () => {
+  const s = connBtn({ running: true, savedNetworks: 1 });
+  assert.match(s, /data-act="disconnect"/);
+  assert.match(s, /Отключиться/);
+  assert.match(s, /is-on/);
+});
+test('connBtn: офлайн с сохранёнными сетями → «Подключиться» (reconnect)', () => {
+  const s = connBtn({ running: false, savedNetworks: 2 });
+  assert.match(s, /data-act="reconnect"/);
+  assert.match(s, /Подключиться/);
+  assert.match(s, /is-off/);
+});
+test('connBtn: офлайн без сохранённых сетей → кнопки нет', () => {
+  assert.equal(connBtn({ running: false, savedNetworks: 0 }), '');
+  assert.equal(connBtn({ running: false }), '');
+});
+test('renderHeader: содержит кнопку подключения по состоянию', () => {
+  assert.match(renderHeader({ running: true, selfEndpoint: 'x', networks: [] }, 'compact'), /data-act="disconnect"/);
+  assert.match(renderHeader({ running: false, savedNetworks: 1, networks: [] }, 'detailed'), /data-act="reconnect"/);
 });
 
 test('renderRail: помечает активную сеть .on и эмитит data-net', () => {

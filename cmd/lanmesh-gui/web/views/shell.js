@@ -14,8 +14,22 @@ export function statusPill(state) {
   return { cls: 'on', text: nets.length + ' ' + plural(nets.length, 'сеть', 'сети', 'сетей') };
 }
 
+// connBtn — глобальная кнопка узла: «Отключиться» когда онлайн (data-act=disconnect →
+// уйти в офлайн, НЕ выходя из сетей), «Подключиться» когда офлайн, но есть сохранённые
+// сети (data-act=reconnect). Если офлайн и сетей нет — кнопки нет (нечего поднимать).
+// Иконка питания видна всегда; подпись в компактном режиме скрывается по CSS.
+export function connBtn(state) {
+  const on = state.running;
+  if (!on && !(state.savedNetworks > 0)) return '';
+  const act = on ? 'disconnect' : 'reconnect';
+  const label = on ? 'Отключиться' : 'Подключиться';
+  return `<button class="conn-btn ${on ? 'is-on' : 'is-off'}" data-act="${act}" title="${label}">`
+    + `<span class="pw">⏻</span><span class="lbl">${label}</span></button>`;
+}
+
 export function renderHeader(state, mode) {
   const p = statusPill(state);
+  const conn = connBtn(state);
   // Кнопки своей рамки (frameless-окно) — видны только в нативном приложении
   // (класс .native на <html>), в браузере/mock скрыты. Свернуть / закрыть-в-трей.
   const win = `<button class="wbtn" data-win="minimize" title="Свернуть">–</button>`
@@ -23,12 +37,12 @@ export function renderHeader(state, mode) {
   // detailed: рейл уже показывает бренд "lanmesh" — не дублируем вордмарк в шапке.
   if (mode === 'detailed') {
     return `<div class="hd"><span class="grow"></span>`
-      + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>`
+      + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>${conn}`
       + `<button class="iconbtn" data-act="collapse" title="Компактный режим">⤡</button>`
       + win + `</div>`;
   }
   return `<div class="hd"><span class="wm">lan<b>mesh</b></span><span class="grow"></span>`
-    + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>`
+    + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>${conn}`
     + `<button class="iconbtn" data-act="show-settings" title="Настройки">⚙</button>`
     + `<button class="iconbtn" data-act="expand" title="Подробный режим">⤢</button>`
     + win + `</div>`;

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderSettings, renderSettingsCompact } from '../../web/views/settings.js';
+import { renderSettings, renderSettingsCompact, settingsBody, srvRow } from '../../web/views/settings.js';
 import { renderCompact } from '../../web/views/list.js';
 import { renderHeader } from '../../web/views/shell.js';
 
@@ -13,6 +13,28 @@ test('renderSettings содержит поля сигналок, релея и �
 test('renderSettings блокирует правку серверов при поднятой сети', () => {
   const s = renderSettings({ running: true, sendLogs: true });
   assert.match(s, /disabled/);
+});
+
+test('settingsBody показывает добавленные сигналки строками и предзаполняет relay', () => {
+  const s = settingsBody({ running: false, cfgSignals: ['https://a.example', 'https://b.example'], cfgRelay: 'r.example:25555' });
+  assert.match(s, /value="https:\/\/a\.example"/);
+  assert.match(s, /value="https:\/\/b\.example"/);
+  assert.match(s, /value="r\.example:25555"/);
+  assert.equal((s.match(/class="s-sig"/g) || []).length, 2);
+  assert.match(s, /data-act="sig-add"/);   // добавить
+  assert.match(s, /data-act="sig-del"/);   // удалить у строки
+});
+test('settingsBody: без cfgSignals — одна пустая строка для ввода', () => {
+  assert.equal((settingsBody({ running: false }).match(/class="s-sig"/g) || []).length, 1);
+});
+test('srvRow: адрес-инпут + кнопка удаления, значение экранируется', () => {
+  const s = srvRow('https://x"><b>');
+  assert.match(s, /class="s-sig"/);
+  assert.match(s, /data-act="sig-del"/);
+  assert.ok(!s.includes('<b>'));
+});
+test('settingsBody блокирует правку при поднятой сети', () => {
+  assert.match(settingsBody({ running: true, cfgSignals: ['https://a'] }), /class="s-sig"[^>]*disabled/);
 });
 
 test('renderSettingsCompact — те же настройки + кнопка «назад к списку»', () => {

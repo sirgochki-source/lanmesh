@@ -98,6 +98,22 @@ button.iconbtn {
 button.iconbtn:hover { background: rgba(255,255,255,.09); color: var(--fg); }
 button.iconbtn:active { background: rgba(255,255,255,.12); }
 
+/* ---------- кнопка Отключиться / Подключиться ---------- */
+.conn-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+  border-radius: 7px; font: inherit; font-size: 11px; font-weight: 650; cursor: pointer; flex: none;
+  background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09); color: var(--fg-mut);
+}
+.conn-btn .pw { font-size: 12px; line-height: 1; }
+.conn-btn.is-on { color: #ffb4b4; border-color: rgba(255,128,128,.28); }
+.conn-btn.is-on:hover { background: rgba(229,72,77,.16); color: #ff8f8f; }
+.conn-btn.is-off { color: var(--accent); border-color: rgba(55,245,197,.3); }
+.conn-btn.is-off:hover { background: rgba(55,245,197,.12); }
+.conn-btn:disabled { opacity: .6; cursor: default; }
+/* компакт — тесная шапка: только иконка питания, подпись по тултипу */
+#root[data-mode="compact"] .conn-btn { padding: 0; width: 24px; justify-content: center; gap: 0; }
+#root[data-mode="compact"] .conn-btn .lbl { display: none; }
+
 /* ---------- рейл (подробный режим) ---------- */
 .rail {
   width: 194px; flex: 0 0 194px; padding: 12px 11px; border-right: 1px solid rgba(255,255,255,.06);
@@ -357,10 +373,22 @@ input:focus { outline: none; border-color: var(--accent); }
 /* renderSettings() кладёт поля плоскими соседями внутри .dmain — интервал между ними
    даёт flex-gap самого .dmain (см. правило .dmain выше), поэтому здесь везде margin: 0,
    а не переопределение отступов у каждого поля по отдельности. */
-.dmain h2.soon-h {
+.dmain h2.soon-h, .cfg-compact h2.soon-h {
   margin: 0; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
   color: var(--fg-mut);
 }
+
+/* ---------- редактируемый список серверов (сигналки/relay) в настройках ---------- */
+.srv-list { display: flex; flex-direction: column; gap: 8px; }
+.srv-row { display: flex; gap: 8px; align-items: center; }
+.srv-row .s-sig { flex: 1; min-width: 0; margin: 0; font-family: var(--mono); font-size: 12.5px; }
+.srv-del {
+  flex: none; width: 34px; height: 36px; border-radius: 8px; cursor: pointer; font-size: 13px; line-height: 1;
+  background: rgba(255,255,255,.04); border: 1px solid var(--glass-border); color: var(--fg-mut);
+}
+.srv-del:hover { background: rgba(229,72,77,.16); color: #ff8f8f; border-color: rgba(255,128,128,.3); }
+.srv-add { align-self: flex-start; }
+.s-relay { margin: 0; font-family: var(--mono); font-size: 12.5px; }
 .dmain label { display: block; margin: 0; font-size: 11.5px; color: var(--fg-mut); }
 .dmain > input, .dmain > textarea { margin: 0; }
 textarea {
@@ -407,7 +435,7 @@ textarea:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .tcell .trate { flex-basis: 100%; text-align: right; font-size: 10px; color: var(--fg-mut); }
 
 /* ---------- компактный экран настроек (вход через ⚙ в шапке) ---------- */
-.cfg-compact { padding: 0 11px 16px; }
+.cfg-compact { padding: 0 11px 16px; display: flex; flex-direction: column; gap: 12px; }
 .cfg-compact-hd { display: flex; align-items: center; gap: 10px; padding: 6px 0 2px; }
 .cfg-compact-title { font-size: 15px; font-weight: 650; color: var(--fg); }
 
