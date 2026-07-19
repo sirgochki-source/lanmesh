@@ -140,6 +140,17 @@ func effectiveRelay(c Config) string {
 }
 
 func main() {
+	// Единственный экземпляр: если панель уже слушает 8737 — другой экземпляр уже
+	// запущен (возможно, свёрнут в трей). Показываем его окно и выходим, а не падаем
+	// молча. Порт не требует прав, поэтому проверяем ДО UAC — повторный клик по exe
+	// не плодит UAC-запрос и не трогает сетевой адаптер.
+	if probe, err := net.Listen("tcp", listenAddr); err != nil {
+		showExisting()
+		return
+	} else {
+		probe.Close()
+	}
+
 	logs := setupLogging()
 
 	// Адаптер требует прав администратора — если их нет, перезапускаемся с UAC.
@@ -274,7 +285,22 @@ var (
 	procSetWindowLongPtr = user32.NewProc("SetWindowLongPtrW")
 	procCallWindowProc   = user32.NewProc("CallWindowProcW")
 	procGetWindowRect    = user32.NewProc("GetWindowRect")
+	procFindWindow       = user32.NewProc("FindWindowW")
 )
+
+// showExisting поднимает окно уже запущенного экземпляра lanmesh (по заголовку) —
+// на случай, когда его окно свёрнуто в трей, а пользователь снова кликнул по exe.
+func showExisting() {
+	title, err := windows.UTF16PtrFromString("lanmesh")
+	if err != nil {
+		return
+	}
+	hwnd, _, _ := procFindWindow.Call(0, uintptr(unsafe.Pointer(title)))
+	if hwnd != 0 {
+		procShowWindow.Call(hwnd, swRestore)
+		procSetForeground.Call(hwnd)
+	}
+}
 
 // Кастомная (frameless) рамка: нативный заголовок убран, полосу рисует само
 // приложение. Геометрия зон для WM_NCHITTEST.
