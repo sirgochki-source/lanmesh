@@ -1,4 +1,4 @@
-import { renderHeader, renderRail, pickMode } from './views/shell.js';
+import { renderHeader, renderRail, pickMode, renderThemePopover } from './views/shell.js';
 import { RttHistory } from './lib/rtt-history.js';
 import { diffPeers } from './lib/peerdiff.js';
 import { collectPeers } from './lib/collect.js';
@@ -239,6 +239,29 @@ document.addEventListener('mousedown', (e) => {
   if (!e.target.closest('.hd')) return;
   if (e.target.closest('button, a, input, [data-act], [data-win], [data-copy]')) return;
   window.lmDrag();
+});
+
+// Тема оформления (9 штук): применяется классом data-theme на <html>, сохраняется в
+// localStorage. CSS переопределяет только акцент — остальное выводится из него (см. app.css).
+function applyTheme(id) { document.documentElement.dataset.theme = id; localStorage.setItem('lm-theme', id); }
+applyTheme(localStorage.getItem('lm-theme') || 'mint');
+// Поповер выбора темы: тоггл по кнопке-палитре, применение по фишке, закрытие по клику вне.
+function toggleThemePop(btn) {
+  if (document.getElementById('themepop')) { document.getElementById('themepop').remove(); return; }
+  const pop = document.createElement('div');
+  pop.id = 'themepop'; pop.className = 'theme-pop';
+  pop.innerHTML = renderThemePopover(document.documentElement.dataset.theme || 'mint');
+  document.body.appendChild(pop);
+  const r = btn.getBoundingClientRect();          // позиционируем под кнопкой, правым краем к ней
+  pop.style.top = (r.bottom + 8) + 'px';
+  pop.style.right = Math.max(8, innerWidth - r.right) + 'px';
+}
+document.addEventListener('click', (e) => {
+  const tbtn = e.target.closest('[data-act="theme-menu"]');
+  if (tbtn) { toggleThemePop(tbtn); return; }
+  const chip = e.target.closest('#themepop [data-theme]');
+  if (chip) { applyTheme(chip.dataset.theme); document.getElementById('themepop')?.remove(); return; }
+  if (document.getElementById('themepop') && !e.target.closest('#themepop')) document.getElementById('themepop').remove();
 });
 
 // В нативном окне (webview2.Bind даёт window.lmWindow) — своя рамка: показываем

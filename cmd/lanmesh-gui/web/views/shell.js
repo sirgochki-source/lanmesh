@@ -39,9 +39,37 @@ export function connBtn(state) {
     + `<span class="pw">⏻</span><span class="lbl">${label}</span></button>`;
 }
 
+// 9 тем оформления: id (= data-theme в CSS), подпись и две краски для превью-точки.
+export const THEMES = [
+  { id: 'mint', name: 'Мята', a: '#37f5c5', b: '#22d3ee' },
+  { id: 'aurora', name: 'Аврора', a: '#a78bfa', b: '#7c3aed' },
+  { id: 'ocean', name: 'Океан', a: '#38bdf8', b: '#0ea5e9' },
+  { id: 'sunset', name: 'Закат', a: '#fb923c', b: '#f43f5e' },
+  { id: 'rose', name: 'Роза', a: '#f472b6', b: '#d946ef' },
+  { id: 'emerald', name: 'Изумруд', a: '#34d399', b: '#14b8a6' },
+  { id: 'gold', name: 'Золото', a: '#fbbf24', b: '#f59e0b' },
+  { id: 'crimson', name: 'Малина', a: '#fb7185', b: '#e11d48' },
+  { id: 'indigo', name: 'Индиго', a: '#818cf8', b: '#6366f1' },
+];
+
+// Кнопка-палитра: точка в текущем акценте (var(--accent)); клик открывает поповер.
+export function themeBtn() {
+  return `<button class="iconbtn theme-btn" data-act="theme-menu" title="Тема оформления"><span class="theme-cur"></span></button>`;
+}
+
+// Поповер выбора темы: сетка из 9 «фишек» (превью-точка + имя), активная помечена .on.
+export function renderThemePopover(current) {
+  const chips = THEMES.map(t =>
+    `<button class="theme-chip ${t.id === current ? 'on' : ''}" data-theme="${t.id}" title="${t.name}">`
+    + `<span class="theme-dot" style="background:linear-gradient(135deg,${t.a},${t.b})"></span>`
+    + `<span class="theme-name">${t.name}</span></button>`).join('');
+  return `<div class="theme-pop-hd">Тема оформления</div><div class="theme-grid">${chips}</div>`;
+}
+
 export function renderHeader(state, mode) {
   const p = statusPill(state);
   const conn = connBtn(state);
+  const theme = themeBtn();
   // Кнопки своей рамки (frameless-окно) — видны только в нативном приложении
   // (класс .native на <html>), в браузере/mock скрыты. Свернуть / закрыть-в-трей.
   const win = `<button class="wbtn" data-win="minimize" title="Свернуть">–</button>`
@@ -49,12 +77,12 @@ export function renderHeader(state, mode) {
   // detailed: рейл уже показывает бренд "lanmesh" — не дублируем вордмарк в шапке.
   if (mode === 'detailed') {
     return `<div class="hd"><span class="grow"></span>`
-      + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>${conn}`
+      + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>${conn}${theme}`
       + `<button class="iconbtn" data-act="collapse" title="Компактный режим">⤡</button>`
       + win + `</div>`;
   }
   return `<div class="hd"><span class="wm">lan<b>mesh</b></span><span class="grow"></span>`
-    + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>${conn}`
+    + `<span class="pill ${p.cls}"><span class="pdot"></span>${p.text}</span>${conn}${theme}`
     + `<button class="iconbtn" data-act="show-settings" title="Настройки">⚙</button>`
     + `<button class="iconbtn" data-act="expand" title="Подробный режим">⤢</button>`
     + win + `</div>`;

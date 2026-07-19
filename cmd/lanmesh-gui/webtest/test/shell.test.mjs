@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { statusPill, pickMode, renderHeader, renderRail, connBtn, displayNets } from '../../web/views/shell.js';
+import { statusPill, pickMode, renderHeader, renderRail, connBtn, displayNets, THEMES, themeBtn, renderThemePopover } from '../../web/views/shell.js';
 
 test('statusPill отражает состояние', () => {
   assert.equal(statusPill({ running: false, networks: [] }).cls, 'off');
@@ -56,6 +56,27 @@ test('renderRail: неактивная сеть помечена .off', () => {
   const html = renderRail({ networks: [], savedNets: [{ tag: 'b', name: 'Beta' }] }, 'list', null);
   assert.match(html, /class="netitem on off"|netitem[^"]*off/);
   assert.match(html, /Beta/);
+});
+
+test('THEMES: ровно 9 тем с уникальными id', () => {
+  assert.equal(THEMES.length, 9);
+  assert.equal(new Set(THEMES.map(t => t.id)).size, 9);
+});
+test('themeBtn: кнопка-палитра (data-act=theme-menu, точка текущего акцента)', () => {
+  const s = themeBtn();
+  assert.match(s, /data-act="theme-menu"/);
+  assert.match(s, /theme-cur/);
+});
+test('renderThemePopover: 9 фишек, активная помечена .on', () => {
+  const s = renderThemePopover('ocean');
+  assert.equal((s.match(/class="theme-chip/g) || []).length, 9);
+  assert.match(s, /theme-chip on" data-theme="ocean"/);
+  assert.match(s, /data-theme="mint"/);
+  assert.match(s, /data-theme="indigo"/);
+});
+test('renderHeader: содержит кнопку выбора темы (оба режима)', () => {
+  assert.match(renderHeader({ running: true, selfEndpoint: 'x', networks: [] }, 'compact'), /data-act="theme-menu"/);
+  assert.match(renderHeader({ running: true, selfEndpoint: 'x', networks: [] }, 'detailed'), /data-act="theme-menu"/);
 });
 
 test('renderRail: помечает активную сеть .on и эмитит data-net', () => {

@@ -10,12 +10,19 @@
   --glass-border: rgba(255,255,255,.11);
   --glass-hi:     rgba(255,255,255,.09);   /* inset top highlight */
   --blur: 16px;                            /* backdrop-filter: blur() saturate(1.2) */
-  /* аврора-свечение (низкая непрозрачность, база остаётся тёмной) */
-  --glow-mint:   rgba(52,229,176,.18);     /* верх-лево  */
-  --glow-violet: rgba(139,92,246,.20);     /* низ-право  */
-  /* акценты */
-  --accent:      #37f5c5;  --accent-2: #46e6c0;  /* direct / бренд (неон-мята) */
-  --relay:       #8fbaff;                        /* relay */
+  /* аврора-свечение (низкая непрозрачность, база остаётся тёмной) — задаётся темой */
+  --glow-1:      rgba(52,229,176,.18);     /* верх-лево  */
+  --glow-2:      rgba(139,92,246,.20);     /* низ-право  */
+  /* акценты. Тема переопределяет только --accent/--accent-2/--accent-grad/--glow-1/--glow-2,
+     а мягкие подложки/границы/текст-на-акценте выводятся из --accent через color-mix (лениво:
+     var(--accent) внутри резолвится в момент использования, т.е. с учётом темы). */
+  --accent:      #37f5c5;  --accent-2: #46e6c0;  /* direct / бренд */
+  --accent-grad: #22d3ee;                        /* второй стоп градиентов (кнопки/бары) */
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);  /* подложки .on/бейджей */
+  --accent-line: color-mix(in srgb, var(--accent) 28%, transparent);  /* границы .on */
+  --accent-fg:   color-mix(in srgb, var(--accent) 42%, white);        /* текст на мягкой подложке */
+  --on-accent:   color-mix(in srgb, var(--accent) 22%, #04100b);      /* тёмный текст на сплошном акценте */
+  --relay:       #8fbaff;                        /* relay (семантика, не тема) */
   --ping-ok:     #ffcf5c;                        /* средний пинг / connecting */
   --ping-bad:    #ff8080;                        /* высокий пинг */
   /* текст */
@@ -26,6 +33,24 @@
   /* уровни качества связи (Task 11) — переиспользуют уже заданные акценты,
      чтобы плитка «Качество» и стрелка спарклайна не заводили свою палитру */
   --q-good: var(--accent-2);  --q-ok: var(--ping-ok);  --q-bad: var(--ping-bad);  --q-connecting: var(--fg-mut);
+}
+
+/* ==================== Темы оформления (9 штук) ====================
+   Каждая переопределяет только акцент, его светлый вариант, второй стоп градиента и два
+   аврора-свечения. Подложки/границы/текст-на-акценте выводятся из --accent (см. :root). */
+:root[data-theme="mint"]    { --accent:#37f5c5; --accent-2:#5eead4; --accent-grad:#22d3ee; --glow-1:rgba(52,229,176,.18);  --glow-2:rgba(139,92,246,.20); }
+:root[data-theme="aurora"]  { --accent:#a78bfa; --accent-2:#c4b5fd; --accent-grad:#7c3aed; --glow-1:rgba(167,139,250,.22); --glow-2:rgba(56,189,248,.16); }
+:root[data-theme="ocean"]   { --accent:#38bdf8; --accent-2:#7dd3fc; --accent-grad:#0ea5e9; --glow-1:rgba(56,189,248,.20);  --glow-2:rgba(45,212,191,.16); }
+:root[data-theme="sunset"]  { --accent:#fb923c; --accent-2:#fdba74; --accent-grad:#f43f5e; --glow-1:rgba(251,146,60,.20);  --glow-2:rgba(244,63,94,.18); }
+:root[data-theme="rose"]    { --accent:#f472b6; --accent-2:#f9a8d4; --accent-grad:#d946ef; --glow-1:rgba(244,114,182,.22); --glow-2:rgba(217,70,239,.16); }
+:root[data-theme="emerald"] { --accent:#34d399; --accent-2:#6ee7b7; --accent-grad:#14b8a6; --glow-1:rgba(52,211,153,.20);  --glow-2:rgba(16,185,129,.15); }
+:root[data-theme="gold"]    { --accent:#fbbf24; --accent-2:#fcd34d; --accent-grad:#f59e0b; --glow-1:rgba(251,191,36,.20);  --glow-2:rgba(245,158,11,.17); }
+:root[data-theme="crimson"] { --accent:#fb7185; --accent-2:#fda4af; --accent-grad:#e11d48; --glow-1:rgba(251,113,133,.22); --glow-2:rgba(190,18,60,.16); }
+:root[data-theme="indigo"]  { --accent:#818cf8; --accent-2:#a5b4fc; --accent-grad:#6366f1; --glow-1:rgba(129,140,248,.22); --glow-2:rgba(56,189,248,.15); }
+
+/* мягкая смена акцента при переключении темы */
+.pill, .sdot, .sig, .badge, .conn-btn, .netitem, .av, .btn-primary, .theme-dot {
+  transition: background-color .28s ease, border-color .28s ease, color .28s ease, box-shadow .28s ease;
 }
 
 * { box-sizing: border-box; }
@@ -46,8 +71,9 @@ body {
 #root::before {
   content: ''; position: absolute; inset: 0; z-index: 0; pointer-events: none;
   background:
-    radial-gradient(70% 45% at 10% -5%, var(--glow-mint), transparent 55%),
-    radial-gradient(70% 50% at 105% 108%, var(--glow-violet), transparent 55%);
+    radial-gradient(70% 45% at 10% -5%, var(--glow-1), transparent 55%),
+    radial-gradient(70% 50% at 105% 108%, var(--glow-2), transparent 55%);
+  transition: background .35s ease;
 }
 #rail, #main { position: relative; z-index: 1; }
 /* #toasts стоит НЕ включать сюда: #toasts (ID) перебил бы .toasts (класс)
@@ -77,7 +103,7 @@ html.native .hd { user-select: none; -webkit-user-select: none; }
 }
 .pill .pdot { width: 5px; height: 5px; border-radius: 50%; flex: none; }
 .pill.on {
-  color: #bff5e6; background: rgba(55,245,197,.10); border: 1px solid rgba(55,245,197,.22);
+  color: var(--accent-fg); background: var(--accent-soft); border: 1px solid var(--accent-line);
 }
 .pill.on .pdot { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .pill.warn {
@@ -107,12 +133,35 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
 .conn-btn .pw { font-size: 12px; line-height: 1; }
 .conn-btn.is-on { color: #ffb4b4; border-color: rgba(255,128,128,.28); }
 .conn-btn.is-on:hover { background: rgba(229,72,77,.16); color: #ff8f8f; }
-.conn-btn.is-off { color: var(--accent); border-color: rgba(55,245,197,.3); }
-.conn-btn.is-off:hover { background: rgba(55,245,197,.12); }
+.conn-btn.is-off { color: var(--accent); border-color: var(--accent-line); }
+.conn-btn.is-off:hover { background: var(--accent-soft); }
 .conn-btn:disabled { opacity: .6; cursor: default; }
 /* компакт — тесная шапка: только иконка питания, подпись по тултипу */
 #root[data-mode="compact"] .conn-btn { padding: 0; width: 24px; justify-content: center; gap: 0; }
 #root[data-mode="compact"] .conn-btn .lbl { display: none; }
+
+/* ---------- кнопка-палитра тем + поповер выбора ---------- */
+.theme-btn { padding: 0; }
+.theme-cur {
+  width: 14px; height: 14px; border-radius: 50%; display: block;
+  background: linear-gradient(135deg, var(--accent), var(--accent-grad)); box-shadow: 0 0 6px var(--accent);
+}
+.theme-pop {
+  position: fixed; z-index: 50; width: 232px; padding: 12px;
+  background: var(--bg-panel); border: 1px solid var(--glass-border); border-radius: 14px;
+  box-shadow: 0 14px 36px rgba(0,0,0,.5), inset 0 1px 0 var(--glass-hi);
+  backdrop-filter: blur(var(--blur)) saturate(1.2);
+}
+.theme-pop-hd { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--fg-mut); margin-bottom: 10px; }
+.theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.theme-chip {
+  display: flex; align-items: center; gap: 8px; padding: 7px 9px; border-radius: 10px; cursor: pointer;
+  background: transparent; border: 1px solid transparent; color: var(--fg-mut); font: inherit; font-size: 12px; text-align: left;
+}
+.theme-chip:hover { background: rgba(255,255,255,.05); color: var(--fg); }
+.theme-chip.on { border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-fg); }
+.theme-dot { width: 16px; height: 16px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1px rgba(255,255,255,.15); }
+.theme-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---------- рейл (подробный режим) ---------- */
 .rail {
@@ -127,7 +176,7 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
   font-size: 12px; color: #c3ccd8; cursor: pointer;
 }
 .netitem:hover { background: rgba(255,255,255,.04); }
-.netitem.on { background: rgba(55,245,197,.10); border: 1px solid rgba(55,245,197,.22); color: #dbf6ee; }
+.netitem.on { background: var(--accent-soft); border: 1px solid var(--accent-line); color: var(--accent-fg); }
 .netitem .pdot { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .netitem .cnt { margin-left: auto; font-size: 10.5px; color: var(--fg-mut); }
 
@@ -146,7 +195,7 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
   cursor: pointer;
 }
 .btn:hover { background: rgba(255,255,255,.08); }
-.btn.pri { color: #04231d; border-color: transparent; background: linear-gradient(90deg,#37f5c5,#22d3ee); }
+.btn.pri { color: var(--on-accent); border-color: transparent; background: linear-gradient(90deg, var(--accent), var(--accent-grad)); }
 .btn.pri:hover { filter: brightness(1.06); }
 
 /* ---------- тосты ---------- */
@@ -277,7 +326,7 @@ button.iconbtn:active { background: rgba(255,255,255,.12); }
 .btn-primary {
   display: block; width: 100%; font: inherit; font-size: 13px; font-weight: 650; padding: 10px;
   border-radius: 9px; margin-top: 10px; cursor: pointer;
-  color: #04231d; border: none; background: linear-gradient(90deg, var(--accent), #22d3ee);
+  color: var(--on-accent); border: none; background: linear-gradient(90deg, var(--accent), var(--accent-grad));
 }
 .btn-primary:hover { filter: brightness(1.06); }
 .btn-primary:active { filter: brightness(0.96); }
@@ -363,7 +412,7 @@ input:focus { outline: none; border-color: var(--accent); }
 
 /* ---------- бейдж статуса ---------- */
 .badge { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; flex: none; }
-.badge.direct { background: rgba(55,245,197,.13); color: var(--accent-2); }
+.badge.direct { background: var(--accent-soft); color: var(--accent-2); }
 .badge.relay  { background: rgba(106,168,255,.15); color: var(--relay); }
 .badge.conn   { background: rgba(255,207,92,.14); color: var(--ping-ok); }
 
@@ -426,7 +475,7 @@ textarea:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
   flex: 1; min-width: 30px; height: 6px; border-radius: 999px;
   background: rgba(255,255,255,.06); overflow: hidden;
 }
-.tbar { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), #22d3ee); }
+.tbar { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-grad)); }
 /* Колонка ↓RX/↑TX: накопленное значение в строке, скорость под ним мельче и приглушённей —
    тот же приём, что у .tile .big/.sub (Task 11), чтобы не заводить отдельный визуальный язык. */
 .tcell {
