@@ -40,10 +40,12 @@ function cmpVip(a, b) {
 }
 
 export function peerRowCompact(peer, netSignals = []) {
+  // Имя + IP в столбик (как в подробном), точки сигналок и пинг — справа.
   return `<div class="row"><span class="sdot ${sdotCls(peer.status)}"></span>`
-    + `<span class="nm">${dispName(peer.name || 'узел')}</span><span class="grow"></span>`
-    + `${peerSignalDots(peer.signals, netSignals)}`
-    + `<span class="ip mono copyable" data-copy="${esc(peer.vip)}" title="скопировать IP">${esc(peer.vip)}</span>${pngHtml(peer)}</div>`;
+    + `<span class="who"><span class="nm">${dispName(peer.name || 'узел')}</span>`
+    + `<span class="ip mono copyable" data-copy="${esc(peer.vip)}" title="скопировать IP">${esc(peer.vip)}</span></span>`
+    + `<span class="grow"></span>`
+    + `${peerSignalDots(peer.signals, netSignals)}${pngHtml(peer)}</div>`;
 }
 
 export function netCardCompact(net) {
