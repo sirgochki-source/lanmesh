@@ -35,22 +35,6 @@ test('peerRowDetailed экранирует peer.status в бейдже (клас
   assert.match(s, /badge direct&quot;&gt;&lt;script&gt;1&lt;\/script&gt;/);
 });
 
-test('renderDetailed map — делегирует в renderMap (Phase 4, больше не заглушка)', () => {
-  const st = {
-    running: true, selfEndpoint: 'x', selfName: 'MY-PC', selfIP: '25.31.8.2',
-    networks: [{ name: 'n', tag: 't', signals: [], peers: [{ name: 'A', vip: '1.1.1.1', status: 'direct', rttMs: 10 }] }],
-  };
-  const s = renderDetailed(st, 'map', {});
-  assert.doesNotMatch(s, /Карта сети — скоро/i);
-  assert.match(s, /<svg/);
-  assert.match(s, /<div class="dmain">/);
-});
-
-test('renderDetailed map — без активных сетей ведёт себя как остальные виды (подсказка, не падает)', () => {
-  const st = { running: true, selfEndpoint: 'x', networks: [] };
-  assert.match(renderDetailed(st, 'map', {}), /Нет активных сетей/);
-});
-
 test('renderDetailed traffic — делегирует в renderTraffic (Phase 3, больше не заглушка)', () => {
   const st = {
     running: true, selfEndpoint: 'x', networks: [{

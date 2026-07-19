@@ -35,7 +35,7 @@ export function renderRail(state, activeView, activeNetTag) {
   const netsHtml = nets.map(n =>
     `<div class="netitem ${n.tag === activeTag ? 'on' : ''}" data-view="list" data-net="${esc(n.tag)}"><span class="pdot"></span>${escName(n.name)}`
     + `<span class="cnt">${(n.peers || []).length}</span></div>`).join('');
-  const nav = [['list', '▤', 'Список'], ['map', '◎', 'Карта'], ['traffic', '▮', 'Трафик'], ['settings', '⚙', 'Настройки']]
+  const nav = [['list', '▤', 'Список'], ['traffic', '▮', 'Трафик'], ['settings', '⚙', 'Настройки']]
     .map(([v, ic, t]) => `<div class="n ${v === activeView ? 'on' : ''}" data-view="${v}">${ic}&nbsp; ${t}</div>`).join('');
   return `<div class="rail"><div class="brand">lan<b>mesh</b></div>${netsHtml}<div class="nav">${nav}</div></div>`;
 }

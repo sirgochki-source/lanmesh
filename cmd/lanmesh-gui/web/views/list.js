@@ -6,7 +6,6 @@ import { quality } from '../lib/quality.js';
 import { sparklineSVG } from '../lib/sparkline.js';   // реально используется с Task 12 (накопление истории)
 import { renderSettings } from './settings.js';
 import { renderTraffic, netTrafficTotals } from './traffic.js';
-import { renderMap } from './map.js';
 
 const pngHtml = (peer) => {
   if (peer.status === 'connecting') return '<span class="png conn">подключение…</span>';
@@ -115,11 +114,10 @@ export function renderDetailed(state, view, histories = {}, activeNetTag, rates 
   const nets = state.networks || [];
   const net = nets.find(n => n.tag === activeNetTag) || nets[0];
   if (view === 'settings') return renderSettings(state);
-  // !net — 'traffic' и 'map' (Phase 4) ожидают реальную сеть, а не строят на пустом месте
-  // «сеть по умолчанию»; при отсутствии сетей у обоих видов та же подсказка, что и у списка.
+  // 'traffic' ожидает реальную сеть, а не строит «сеть по умолчанию» на пустом месте;
+  // при отсутствии сетей — та же подсказка, что и у списка.
   if (!net) return soon('Нет активных сетей. Добавь сеть в компактном режиме.');
   if (view === 'traffic') return renderTraffic(net, rates);
-  if (view === 'map') return `<div class="dmain">${renderMap(state, net)}</div>`;
   const peers = (net.peers || []).slice().sort(cmpVip);
   const rows = peers.map(p => peerRowDetailed(p, histories[p.vip] || [])).join('') || '<div class="empty">Пока никого.</div>';
   const traf = netTrafficTotals(net, rates);

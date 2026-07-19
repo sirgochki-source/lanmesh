@@ -389,9 +389,3 @@ textarea:disabled, input:disabled { opacity: .5; cursor: not-allowed; }
 .tcell.tx .tarr { color: var(--relay); }     /* отдача — тот же голубой, что у relay */
 .tcell .tval { font-size: 12.5px; font-weight: 600; color: var(--fg); }
 .tcell .trate { flex-basis: 100%; text-align: right; font-size: 10px; color: var(--fg-mut); }
-
-/* ==================== Phase 4: вид «Карта» ==================== */
-/* Само оформление узлов/линий — presentation-атрибуты внутри SVG (views/map.js), т.к.
-   svg генерируется как самостоятельная строка (тот же приём, что sparklineSVG); тут —
-   только отзывчивый размер контейнера (viewBox 640×500, но реальная ширина — от .dmain). */
-.svgmap { display: block; width: 100%; max-width: 640px; height: auto; margin: 0 auto; }
