@@ -204,12 +204,16 @@ func main() {
 
 	// Нативное окно (WebView2) на локальную панель — тот же UI, но не в браузере,
 	// без вкладок и адресной строки. Держит главный поток до закрытия окна.
+	// Размеры — в физических пикселях (процесс per-monitor-DPI-aware, см. init),
+	// поэтому домножаем на масштаб первичного монитора: без этого окно на 125/150%
+	// открылось бы визуально мелким.
+	initScale := dpiScaleSystem()
 	w := webview2.NewWithOptions(webview2.WebViewOptions{
 		Debug: false,
 		WindowOptions: webview2.WindowOptions{
 			Title:  "lanmesh",
-			Width:  980,
-			Height: 660,
+			Width:  uint(scalePx(980, initScale)),
+			Height: uint(scalePx(660, initScale)),
 			Center: true,
 		},
 	})
@@ -217,15 +221,20 @@ func main() {
 		log.Fatal("не удалось создать окно (нужен WebView2 Runtime — component из Microsoft Edge)")
 	}
 	defer w.Destroy()
-	w.SetSize(360, 480, webview2.HintMin)
+	// Все размеры окна — физические пиксели (per-monitor-aware), домножаем на масштаб
+	// текущего монитора окна. Масштаб берём в момент вызова, а не один раз: окно могут
+	// перетащить на монитор с другим DPI между сменами режима.
+	winScale := dpiScaleForWindow(uintptr(w.Window()))
+	w.SetSize(scalePx(360, winScale), scalePx(480, winScale), webview2.HintMin)
 	// Мост JS→native: кнопка ⤢/⤡ в панели меняет размер нативного окна под режим
 	// (компакт узкое / подробный широкое). Размер меняем на UI-потоке через Dispatch.
 	w.Bind("lmResize", func(mode string) {
 		w.Dispatch(func() {
+			s := dpiScaleForWindow(uintptr(w.Window()))
 			if mode == "detailed" {
-				w.SetSize(980, 660, webview2.HintNone)
+				w.SetSize(scalePx(980, s), scalePx(660, s), webview2.HintNone)
 			} else {
-				w.SetSize(460, 720, webview2.HintNone)
+				w.SetSize(scalePx(460, s), scalePx(720, s), webview2.HintNone)
 			}
 		})
 	})
@@ -304,7 +313,63 @@ var (
 	procSendMessage      = user32.NewProc("SendMessageW")
 	procReleaseCapture   = user32.NewProc("ReleaseCapture")
 	procExtractIconEx    = windows.NewLazySystemDLL("shell32.dll").NewProc("ExtractIconExW")
+
+	// DPI: объявляем осведомлённость процесса и читаем масштаб монитора. Win10 1607+
+	// (GetDpiFor*) / 1703+ (SetProcessDpiAwarenessContext); WebView2 требует Win10, так
+	// что на боевых машинах функции всегда есть. На старее — .Find() != nil, no-op.
+	procSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
+	procGetDpiForWindow               = user32.NewProc("GetDpiForWindow")
+	procGetDpiForSystem               = user32.NewProc("GetDpiForSystem")
 )
+
+// dpiPerMonitorAwareV2 — DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 (значение -4,
+// передаётся как псевдодескриптор). Окно само отслеживает смену DPI при переносе
+// на другой монитор и перерисовывается чётко.
+const dpiPerMonitorAwareV2 = ^uintptr(3) // -4
+
+// init объявляет процесс per-monitor-v2 DPI-aware ДО создания любого окна (пакетные
+// init выполняются раньше main). Без этого Windows считает процесс DPI-unaware и на
+// мониторах с масштабом >100% растягивает окно WebView2 битмапом — интерфейс у
+// пользователей со 125/150% становится мыльным. Манифест Go-линкера DPI не объявляет,
+// поэтому ставим осведомлённость в рантайме. Осведомлённость раньше никто не трогает,
+// так что вызов проходит (иначе Windows вернул бы ERROR_ACCESS_DENIED).
+func init() {
+	if procSetProcessDpiAwarenessContext.Find() == nil {
+		procSetProcessDpiAwarenessContext.Call(dpiPerMonitorAwareV2)
+	}
+}
+
+// dpiScaleForWindow — множитель размеров относительно 96 DPI (1.0 = 100%) для того
+// монитора, на котором сейчас окно. В per-monitor-aware процессе go-webview2 отдаёт
+// размеры в CreateWindow/SetWindowPos как физические пиксели, поэтому все хардкод-
+// размеры окна домножаем на этот множитель, иначе окно выходит визуально мелким.
+func dpiScaleForWindow(hwnd uintptr) float64 {
+	if procGetDpiForWindow.Find() != nil {
+		return 1
+	}
+	dpi, _, _ := procGetDpiForWindow.Call(hwnd)
+	if dpi == 0 {
+		return 1
+	}
+	return float64(dpi) / 96
+}
+
+// dpiScaleSystem — то же для первичного монитора; нужно для стартового размера окна,
+// когда hwnd ещё не создан (центрирование в go-webview2 тоже идёт по физическим
+// SM_CXSCREEN/SM_CYSCREEN, поэтому масштаб стартового размера центр не сбивает).
+func dpiScaleSystem() float64 {
+	if procGetDpiForSystem.Find() != nil {
+		return 1
+	}
+	dpi, _, _ := procGetDpiForSystem.Call()
+	if dpi == 0 {
+		return 1
+	}
+	return float64(dpi) / 96
+}
+
+// scalePx округляет размер px, домноженный на DPI-масштаб scale.
+func scalePx(px int, scale float64) int { return int(float64(px)*scale + 0.5) }
 
 // setWindowIcon ставит окну иконку из ресурсов самого exe (её же видит проводник) —
 // иначе окно WebView2 не подхватывает её, и на таскбаре/в Alt-Tab пусто. ExtractIconEx
