@@ -26,6 +26,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"fyne.io/systray"
 	"github.com/jchv/go-webview2"
@@ -213,6 +214,14 @@ func main() {
 			}
 		})
 	})
+	// Тёмный заголовок окна под «стеклянную» тему (Windows 11), иначе стандартная
+	// светлая полоса Windows выбивается из тёмного UI.
+	darkTitleBar(uintptr(w.Window()))
+
+	// Закрытие окна (крестик) прячет его в трей, а не завершает приложение —
+	// lanmesh живёт в трее. Реальный выход — только через пункт меню «Выход».
+	installHideOnClose(uintptr(w.Window()))
+
 	// Иконка в системном трее + меню (Открыть окно / Выход) — на отдельном
 	// залоченном OS-потоке, чтобы её message-loop не конфликтовал с главным
 	// message-loop WebView2 (w.Run() держит главный поток до закрытия окна).
@@ -250,12 +259,66 @@ func staticHandler() http.Handler {
 // --- системный трей ---------------------------------------------------------
 
 var (
-	user32            = windows.NewLazySystemDLL("user32.dll")
-	procShowWindow    = user32.NewProc("ShowWindow")
-	procSetForeground = user32.NewProc("SetForegroundWindow")
+	user32               = windows.NewLazySystemDLL("user32.dll")
+	procShowWindow       = user32.NewProc("ShowWindow")
+	procSetForeground    = user32.NewProc("SetForegroundWindow")
+	procGetWindowLongPtr = user32.NewProc("GetWindowLongPtrW")
+	procSetWindowLongPtr = user32.NewProc("SetWindowLongPtrW")
+	procCallWindowProc   = user32.NewProc("CallWindowProcW")
 )
 
-const swRestore = 9 // SW_RESTORE — восстановить/показать окно
+const (
+	swHide    = 0 // SW_HIDE — спрятать окно (сворачивание в трей)
+	swRestore = 9 // SW_RESTORE — восстановить/показать окно
+	wmClose   = 0x0010
+)
+
+var procDwmSetWindowAttribute = windows.NewLazySystemDLL("dwmapi.dll").NewProc("DwmSetWindowAttribute")
+
+const (
+	dwmwaUseImmersiveDarkMode = 20
+	dwmwaBorderColor          = 34
+	dwmwaCaptionColor         = 35
+	dwmwaTextColor            = 36
+)
+
+func setDwmU32(hwnd uintptr, attr uint32, val uint32) {
+	procDwmSetWindowAttribute.Call(hwnd, uintptr(attr), uintptr(unsafe.Pointer(&val)), 4)
+}
+
+// darkTitleBar красит нативный заголовок окна под тёмную «стеклянную» тему панели
+// (Windows 11), чтобы стандартная светлая полоса Windows не выбивалась из UI.
+// COLORREF = 0x00BBGGRR. Цветовые атрибуты — только Win11 (build 22000+); на старых
+// ОС вызовы вернут ошибку, которую мы игнорируем (dark-mode работает с Win10 2004).
+func darkTitleBar(hwnd uintptr) {
+	setDwmU32(hwnd, dwmwaUseImmersiveDarkMode, 1)  // тёмный режим заголовка
+	setDwmU32(hwnd, dwmwaCaptionColor, 0x00120d0a) // фон заголовка = --bg-panel #0a0d12
+	setDwmU32(hwnd, dwmwaTextColor, 0x0098867a)    // текст = приглушённый #7a8698
+	setDwmU32(hwnd, dwmwaBorderColor, 0x00120d0a)  // граница в тон
+}
+
+// origWndProc — оригинальная оконная процедура WebView2, сохранённая при
+// установке нашего перехватчика (installHideOnClose). Ненулевой ⇒ перехват стоит.
+var origWndProc uintptr
+
+// installHideOnClose перехватывает закрытие окна (крестик / WM_CLOSE): вместо
+// уничтожения окна прячет его — приложение продолжает жить в трее, окно
+// возвращается пунктом «Открыть окно». Реальный выход — только через меню трея
+// («Выход» вызывает Terminate, дальше идёт штатный WM_DESTROY, который мы
+// пропускаем в оригинальную процедуру). Все прочие сообщения делегируем ей же.
+func installHideOnClose(hwnd uintptr) {
+	gwlpWndProc := int32(-4) // GWLP_WNDPROC
+	origWndProc, _, _ = procGetWindowLongPtr.Call(hwnd, uintptr(gwlpWndProc))
+	newProc := windows.NewCallback(func(h, msg, wparam, lparam uintptr) uintptr {
+		if msg == wmClose {
+			procShowWindow.Call(h, swHide)
+			return 0 // проглатываем закрытие — окно не уничтожается
+		}
+		ret, _, _ := procCallWindowProc.Call(origWndProc, h, msg, wparam, lparam)
+		return ret
+	})
+	procSetWindowLongPtr.Call(hwnd, uintptr(gwlpWndProc), newProc)
+}
 
 // startTray поднимает иконку lanmesh в системном трее с меню (Открыть окно / Выход)
 // на ОТДЕЛЬНОМ залоченном OS-потоке. systray.Run заводит собственное скрытое окно и
