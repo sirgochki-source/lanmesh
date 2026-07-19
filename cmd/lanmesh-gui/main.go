@@ -218,7 +218,7 @@ func main() {
 			if mode == "detailed" {
 				w.SetSize(980, 660, webview2.HintNone)
 			} else {
-				w.SetSize(380, 720, webview2.HintNone)
+				w.SetSize(418, 720, webview2.HintNone)
 			}
 		})
 	})
