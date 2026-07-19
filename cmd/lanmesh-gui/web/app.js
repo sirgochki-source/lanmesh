@@ -212,6 +212,13 @@ document.addEventListener('click', async (e) => {
     flashChip('Сброшено к стандартным серверам');
     return;
   }
+  if (act === 'save-name') {
+    const name = document.getElementById('s-name').value.trim();
+    const r = await postJSON('/api/setname', { name });
+    if (!r.ok) { const j = await r.json().catch(() => ({})); flashChip('Ошибка: ' + (j.error || r.status)); }
+    else flashChip(name ? ('Имя: ' + name) : 'Имя сброшено к имени ПК');
+    return;
+  }
   if (act === 'check-update') {
     const note = document.getElementById('upd-note');
     if (note) note.textContent = 'Проверяю…';

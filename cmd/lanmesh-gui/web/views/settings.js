@@ -18,7 +18,11 @@ export function settingsBody(state) {
     : 'Пустой список = используются стандартные серверы.';
   const sigs = state.cfgSignals || [];
   const rows = (sigs.length ? sigs : ['']).map(u => srvRow(u, dis)).join('');
-  return `<h2 class="soon-h">Сигнальные серверы</h2>`
+  return `<h2 class="soon-h">Имя узла</h2>`
+    + `<div class="frow"><input id="s-name" value="${esc(state.cfgName || '')}" placeholder="${esc(state.selfName || 'имя ПК')}" maxlength="40" autocomplete="off">`
+    + `<button class="btn-ghost" data-act="save-name">Сохранить</button></div>`
+    + `<div class="hint">Это имя видят другие участники. Пусто = имя компьютера${state.selfName ? ` (${esc(state.selfName)})` : ''}.</div>`
+    + `<h2 class="soon-h">Сигнальные серверы</h2>`
     + `<div id="sig-list" class="srv-list">${rows}</div>`
     + `<button class="btn-ghost srv-add" data-act="sig-add" ${dis}>＋ Добавить сигналку</button>`
     + `<h2 class="soon-h">Ретранслятор (relay)</h2>`

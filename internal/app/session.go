@@ -145,6 +145,32 @@ type Session struct {
 	kickFanout []chan struct{} // kick-каналы всех сетей (fanout сигнала reflex)
 
 	nets map[[32]byte]*netSession // сети по tagB
+
+	// name — отображаемое имя узла (что видят пиры и панель); пусто = os.Hostname().
+	// Защищено ОТДЕЛЬНЫМ nameMu, а не s.mu, чтобы nodeName() можно было звать из-под
+	// s.mu (например, в State) без риска дедлока.
+	nameMu sync.RWMutex
+	name   string
+}
+
+// SetName задаёт отображаемое имя узла (пусто/пробелы = вернуться к hostname). Применяется
+// к новым анонсам и State; уже идущий registerLoop подхватит имя на следующем переподключении.
+func (s *Session) SetName(name string) {
+	s.nameMu.Lock()
+	s.name = strings.TrimSpace(name)
+	s.nameMu.Unlock()
+}
+
+// nodeName — текущее отображаемое имя: заданное пользователем или, если пусто, hostname.
+func (s *Session) nodeName() string {
+	s.nameMu.RLock()
+	n := s.name
+	s.nameMu.RUnlock()
+	if n != "" {
+		return n
+	}
+	h, _ := os.Hostname()
+	return h
 }
 
 // NewSession создаёт узел, привязанный к списку сигналок и STUN-серверов. Пустой
@@ -356,7 +382,6 @@ func (s *Session) bringUpNode() error {
 
 	nodeStop := make(chan struct{})
 	kick := engine.ReflexNotify() // берём ДО Run, чтобы не пропустить ранний сигнал
-	hostname, _ := os.Hostname()
 
 	s.mu.Lock()
 	s.up = true
@@ -388,7 +413,7 @@ func (s *Session) bringUpNode() error {
 		}
 	}()
 	go s.reflexFanout(kick, nodeStop)
-	go s.logLoop(nodeStop, hostname)
+	go s.logLoop(nodeStop)
 
 	log.Printf("узел поднят, виртуальный IP %s", selfIP)
 	return nil
@@ -453,8 +478,7 @@ func (s *Session) State() StateView {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	hostname, _ := os.Hostname()
-	st := StateView{Running: s.up, SelfName: hostname, Error: s.lastErr}
+	st := StateView{Running: s.up, SelfName: s.nodeName(), Error: s.lastErr}
 	if !s.up {
 		return st
 	}
@@ -517,12 +541,12 @@ func (s *Session) SendDiagnostics(ctx context.Context) (string, error) {
 		return first, nil // уже слилось штатным logLoop
 	}
 
-	hostname, _ := os.Hostname()
+	nodeName := s.nodeName()
 	anyOK := false
 	var wg sync.WaitGroup
 	var okMu sync.Mutex
 	for _, tag := range tags {
-		req := proto.LogRequest{NetworkTag: tag, PeerID: peerID, Name: hostname, Lines: lines}
+		req := proto.LogRequest{NetworkTag: tag, PeerID: peerID, Name: nodeName, Lines: lines}
 		for _, u := range urls {
 			wg.Add(1)
 			go func(u string, req proto.LogRequest) {
@@ -615,11 +639,10 @@ func (s *Session) registerLoop(ns *netSession) {
 		clients = append(clients, signal.NewClient(u))
 	}
 
-	hostname, _ := os.Hostname()
 	req := proto.RegisterRequest{
 		NetworkTag: ns.tag,
 		PeerID:     s.peerID,
-		Name:       hostname,
+		Name:       s.nodeName(),
 		VirtualIP:  s.selfIP.String(),
 	}
 
@@ -878,7 +901,7 @@ func short(u string) string {
 // Запрос уходит ТОЛЬКО когда есть новые строки. Ошибки отправки не логируем — иначе
 // неудача породила бы новую строку, которую снова попытаемся отправить, по кругу;
 // вместо этого возвращаем строки в буфер и пробуем в следующий раз.
-func (s *Session) logLoop(nodeStop <-chan struct{}, hostname string) {
+func (s *Session) logLoop(nodeStop <-chan struct{}) {
 	s.mu.Lock()
 	buf := s.logs
 	s.mu.Unlock()
@@ -916,11 +939,12 @@ func (s *Session) logLoop(nodeStop <-chan struct{}, hostname string) {
 			continue
 		}
 
+		nodeName := s.nodeName()
 		anyOK := false
 		var wg sync.WaitGroup
 		var okMu sync.Mutex
 		for _, tag := range tags {
-			req := proto.LogRequest{NetworkTag: tag, PeerID: peerID, Name: hostname, Lines: lines}
+			req := proto.LogRequest{NetworkTag: tag, PeerID: peerID, Name: nodeName, Lines: lines}
 			for _, c := range clients {
 				wg.Add(1)
 				go func(c *signal.Client, req proto.LogRequest) {

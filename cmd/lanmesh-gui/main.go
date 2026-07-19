@@ -92,6 +92,8 @@ type Config struct {
 	Signals []string `json:"signals,omitempty"`
 	// Relay — переопределённый ретранслятор; nil = defaultRelayAddr, "" = без relay.
 	Relay *string `json:"relay,omitempty"`
+	// SelfName — своё отображаемое имя узла; пусто = os.Hostname() (как раньше).
+	SelfName string `json:"selfName,omitempty"`
 }
 
 // addNetwork добавляет сеть в список без дублей (по имени). Вызывать под cfgMu.
@@ -162,6 +164,7 @@ func main() {
 	sess = app.NewSession(effectiveSignals(c), nil, ifaceName)
 	sess.EnableLogUpload(logs, c.sendLogs())
 	sess.UseRelay(effectiveRelay(c))
+	sess.SetName(c.SelfName) // своё имя из конфига (пусто = hostname)
 
 	// Автоподключение ко всем сохранённым сетям (мультисеть). Первая поднимает
 	// узел (STUN+адаптер), остальные добавляются в него мгновенно.
@@ -188,6 +191,7 @@ func main() {
 	mux.HandleFunc("/api/senddiag", guard(handleSendDiag))
 	mux.HandleFunc("/api/diagnose", guard(handleDiagnose))
 	mux.HandleFunc("/api/settings", guard(handleSettings))
+	mux.HandleFunc("/api/setname", guard(handleSetName))
 	mux.HandleFunc("/api/invite", guard(handleInvite))
 	mux.HandleFunc("/api/checkupdate", guard(handleCheckUpdate))
 	mux.HandleFunc("/api/update", guard(handleUpdate))
@@ -422,6 +426,7 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	cfgMu.Lock()
 	sendLogs := cfg.sendLogs()
+	cfgName := cfg.SelfName // своё имя из конфига (пусто = используется hostname)
 	savedList := make([]savedNet, 0, len(cfg.Networks))
 	for _, p := range cfg.Networks {
 		savedList = append(savedList, savedNet{Name: p.Name, Tag: netTag(p.Name, p.Password)})
@@ -443,8 +448,9 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 		SavedNets     []savedNet `json:"savedNets"`
 		CfgSignals    []string   `json:"cfgSignals"`
 		CfgRelay      string     `json:"cfgRelay"`
+		CfgName       string     `json:"cfgName"`
 		Version       string     `json:"version"`
-	}{StateView: st, SendLogs: sendLogs, SavedNetworks: len(savedList), SavedNets: savedList, CfgSignals: cfgSignals, CfgRelay: cfgRelay, Version: version}
+	}{StateView: st, SendLogs: sendLogs, SavedNetworks: len(savedList), SavedNets: savedList, CfgSignals: cfgSignals, CfgRelay: cfgRelay, CfgName: cfgName, Version: version}
 	writeJSON(w, out, http.StatusOK)
 }
 
@@ -687,6 +693,28 @@ func handleReconnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true}, http.StatusOK)
+}
+
+// handleSetName задаёт своё отображаемое имя узла (пусто = вернуться к hostname). Имя
+// сохраняется в конфиг и применяется к сеансу; пиры увидят его при следующем анонсе.
+func handleSetName(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "bad json"}, http.StatusBadRequest)
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if rs := []rune(name); len(rs) > 40 { // не гнать пирам простыню
+		name = string(rs[:40])
+	}
+	cfgMu.Lock()
+	cfg.SelfName = name
+	saveConfig(cfg)
+	cfgMu.Unlock()
+	sess.SetName(name)
+	writeJSON(w, map[string]any{"ok": true, "name": name}, http.StatusOK)
 }
 
 // handleSettings читает и меняет список серверов (сигналки + relay). Менять можно
