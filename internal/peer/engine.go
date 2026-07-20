@@ -241,6 +241,10 @@ type Engine struct {
 	stunServers []string
 	stunReflex  string
 	stunPending map[[12]byte]time.Time
+
+	// onDirect — наружу сообщаем ТОЛЬКО подтверждённый прямой адрес (пришёл
+	// расшифрованный кадр). Кандидаты не годятся: кэш накопил бы мусор из DHT.
+	onDirect func(tag [relayTagLen]byte, id proto.PeerID, addr netip.AddrPort)
 }
 
 // NewEngine создаёт движок на готовом UDP-сокете и TUN-устройстве. Сети
@@ -312,6 +316,15 @@ func (e *Engine) SetSelfName(name string) {
 	}
 	e.mu.Lock()
 	e.selfName = name
+	e.mu.Unlock()
+}
+
+// OnDirectConfirmed ставит колбэк, дёргаемый при подтверждении прямого пути к
+// пиру. Зовётся из горячего пути чтения — колбэк обязан быть быстрым и не
+// блокировать (запись в кэш идёт в память, на диск сохраняет таймер сессии).
+func (e *Engine) OnDirectConfirmed(fn func(tag [relayTagLen]byte, id proto.PeerID, addr netip.AddrPort)) {
+	e.mu.Lock()
+	e.onDirect = fn
 	e.mu.Unlock()
 }
 
@@ -824,6 +837,10 @@ func (e *Engine) netToTun() error {
 			// бы решили, что пробились, перестав долбить кандидаты.
 			ps.lastRelayRecv = time.Now()
 		} else {
+			// changed — адрес сменился или подтверждается впервые. Колбэк наружу
+			// (кэш endpoint'ов) дёргаем только на нём, а не на каждом пакете — он
+			// в горячем пути чтения.
+			changed := !ps.active.IsValid() || ps.active != src
 			// Прямой валидный пакет — вот он, итог пробития NAT.
 			ps.active = src
 			ps.lastRecv = time.Now()
@@ -831,6 +848,9 @@ func (e *Engine) netToTun() error {
 			// его в списке, чтобы после молчания было куда перепробиваться.
 			mergeCandidates(ps, []string{src.String()})
 			delete(nw.probes, src.String()) // голый адрес отработал, стал пиром
+			if changed && e.onDirect != nil {
+				e.onDirect(nw.tag, ps.id, src)
+			}
 		}
 		selfName := e.selfName
 		e.mu.Unlock()

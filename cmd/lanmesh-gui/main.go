@@ -98,6 +98,8 @@ type Config struct {
 	Relay *string `json:"relay,omitempty"`
 	// SelfName — своё отображаемое имя узла; пусто = os.Hostname() (как раньше).
 	SelfName string `json:"selfName,omitempty"`
+	// Port — постоянный локальный UDP-порт узла; 0 = ещё не выбран (см. app.PickPort).
+	Port int `json:"port,omitempty"`
 }
 
 // addNetwork добавляет сеть в список без дублей (по имени). Вызывать под cfgMu.
@@ -170,6 +172,14 @@ func main() {
 	sess.EnableLogUpload(logs, c.sendLogs())
 	sess.UseRelay(effectiveRelay(c))
 	sess.SetName(c.SelfName) // своё имя из конфига (пусто = hostname)
+	// Постоянный порт: PickPort решает сам (первый запуск/занятый сохранённый —
+	// не сохраняем), колбэк дёргается только когда решение нужно записать.
+	sess.SetPort(c.Port, func(port int) {
+		cfgMu.Lock()
+		cfg.Port = port
+		saveConfig(cfg)
+		cfgMu.Unlock()
+	})
 
 	// Автоподключение ко всем сохранённым сетям (мультисеть). Первая поднимает
 	// узел (STUN+адаптер), остальные добавляются в него мгновенно.

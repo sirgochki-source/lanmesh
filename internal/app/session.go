@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand/v2"
 	"net"
 	"net/netip"
 	"os"
@@ -21,9 +22,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sys/windows"
+
 	"github.com/sirgochki-source/lanmesh/internal/crypto"
 	"github.com/sirgochki-source/lanmesh/internal/discovery/dhtdisc"
 	"github.com/sirgochki-source/lanmesh/internal/logbuf"
+	"github.com/sirgochki-source/lanmesh/internal/netcache"
 	"github.com/sirgochki-source/lanmesh/internal/peer"
 	"github.com/sirgochki-source/lanmesh/internal/proto"
 	"github.com/sirgochki-source/lanmesh/internal/signal"
@@ -189,6 +193,19 @@ type Session struct {
 	signalSeen   string // IP глазами сигналки (не подделать) — для сверки со STUN
 	relaySeen    string // внешний адрес глазами релея
 
+	// savedPort/onPortChosen — постоянный локальный порт узла, см. PickPort и
+	// SetPort. onPortChosen дёргается ровно тогда, когда PickPort решил, что выбор
+	// нужно сохранить в конфиг (первый запуск или сохранённый порт занят) — GUI
+	// пишет cfg.Port и сохраняет файл. Оба поля читает только bringUpNode при
+	// подъёме узла, поэтому менять их нужно ДО первого AddNetwork/Start.
+	savedPort    int
+	onPortChosen func(port int)
+
+	// cache — подтверждённые endpoint'ы пиров между запусками (см. internal/netcache).
+	// Открывается один раз при создании сессии и живёт, пока жива сессия — узел
+	// поднимается и снимается многократно, а кэш должен пережить каждый цикл.
+	cache *netcache.Cache
+
 	// dht — общий на узел DHT-узел; поднимается лениво, при первой сети в режиме
 	// DiscoveryDHT, и снимается вместе с последней такой сетью. Держать его без
 	// нужды незачем: это отдельный сокет и постоянный фоновый трафик.
@@ -250,13 +267,37 @@ func NewSession(signalURLs []string, stunServers []string, iface string) *Sessio
 		stunServers: stunServers,
 		iface:       iface,
 		nets:        make(map[[32]byte]*netSession),
+		cache:       netcache.Open(netcachePath()),
 	}
+}
+
+// netcachePath — файл кэша подтверждённых endpoint'ов, рядом с identity/
+// config.json (тот же UserConfigDir()/lanmesh, см. dhtNodesPath). Кэш НЕ
+// шифруется сознательно: config.json рядом хранит пароли сетей открытым
+// текстом, так что шифрование соседнего файла с адресами ничего не защитило бы.
+func netcachePath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "lanmesh", "endpoints.json")
 }
 
 // UseRelay задаёт ретранслятор ("host:port") — общий на все сети. Вызывать до Start.
 func (s *Session) UseRelay(addr string) {
 	s.mu.Lock()
 	s.relayAddr = addr
+	s.mu.Unlock()
+}
+
+// SetPort задаёт сохранённый в конфиге порт узла и колбэк, которым сессия сообщает
+// наружу порт, который нужно сохранить (первый запуск или сохранённый порт занят —
+// см. PickPort). Вызывать до Start/AddNetwork: bringUpNode читает оба поля ровно
+// один раз при подъёме узла, смена на ходу под уже поднятым узлом не подхватится.
+func (s *Session) SetPort(saved int, onChosen func(port int)) {
+	s.mu.Lock()
+	s.savedPort = saved
+	s.onPortChosen = onChosen
 	s.mu.Unlock()
 }
 
@@ -375,6 +416,19 @@ func (s *Session) AddNetworkMode(network, password, discovery string) error {
 	s.nets[tagB] = ns
 	s.rebuildFanoutLocked()
 	s.mu.Unlock()
+
+	// Кэш заливаем ДО первого раунда сигналки/DHT: если адрес друга не менялся,
+	// пробитие стартует на первой секунде, а не после ответа сервера — в этот
+	// момент мы его ещё даже не спросили. PeerID на этом шаге неоткуда взять,
+	// кроме собственного кэша прошлых сессий (сигналка не отвечала, а DHT отдаёт
+	// голые адреса без id) — отсюда Cache.Peers.
+	if s.cache != nil {
+		for _, id := range s.cache.Peers(tag) {
+			if addrs := s.cache.Get(tag, id); len(addrs) > 0 {
+				s.engine.AddProbes(tagB, addrs)
+			}
+		}
+	}
 
 	if usesDHT(discovery) {
 		go s.dhtLoop(ns)
@@ -513,14 +567,72 @@ func (s *Session) Stop() {
 	s.tearDownNode()
 }
 
+// Диапазон для постоянного порта узла. НЕ эфемерный (у Windows 49152–65535):
+// сохранённый оттуда порт после перезагрузки может оказаться занят посторонним
+// приложением, которое система обслужила раньше нас.
+const (
+	portRangeLo = 20000
+	portRangeHi = 40000
+)
+
+// PickPort выбирает локальный UDP-порт узла. Возвращает порт и признак «сохрани
+// меня в конфиг».
+//
+// Постоянный порт нужен двум фичам: проброс на роутере иначе пересоздавался бы
+// каждый запуск и засорял таблицу маппингов, а кэш endpoint'ов был бы наполовину
+// бесполезен — друзья помнят прежний ip:port, а узел уже на другом.
+//
+// Занятый сохранённый порт НЕ перезаписывает конфиг: иначе второй экземпляр на
+// той же машине (run-node2.cmd) при каждом старте угонял бы порт у первого.
+func PickPort(saved int) (int, bool) {
+	if saved != 0 && portFree(saved) {
+		return saved, false
+	}
+	for i := 0; i < 20; i++ {
+		p := portRangeLo + rand.IntN(portRangeHi-portRangeLo)
+		if portFree(p) {
+			return p, saved == 0
+		}
+	}
+	return 0, false // сдаёмся на случайный от ОС; сохранять нечего
+}
+
+// portFree — свободен ли порт на всех интерфейсах. Проверяем тем же способом,
+// каким потом слушаем (dual-stack), иначе проверка соврала бы.
+func portFree(p int) bool {
+	c, err := net.ListenUDP("udp", &net.UDPAddr{Port: p})
+	if err != nil {
+		return false
+	}
+	c.Close()
+	return true
+}
+
 // listenNode поднимает боевой UDP-сокет. Просим "udp" с неуказанным IP — Go
 // ставит IPV6_V6ONLY=0, и один сокет обслуживает оба семейства. Фолбэк на udp4
 // нужен там, где IPv6-стек отключён политикой или отсутствует: узел обязан
 // работать ровно как раньше, а не падать при старте.
+//
+// Занятый порт — ОТДЕЛЬНЫЙ случай, не «нет IPv6». Раньше эта функция звалась
+// только с port=0 (ОС сама выбирает свободный, конфликт в принципе невозможен),
+// поэтому любая ошибка ЗАВЕДОМО означала отсутствие IPv6-стека. С постоянным
+// портом (см. PickPort) конфликт стал возможен — и если завести его в тот же
+// фолбэк, узел молча потеряет IPv6 из-за случайной коллизии порта, хотя стек
+// рабочий, а причина в лог не попадёт (только неверное "работаем только по
+// IPv4"). Разводим: занятый порт возвращаем как явную ошибку, не трогая udp4.
+//
+// Проверено эмпирически (net.ListenUDP на второй бинд того же порта, см.
+// port_test.go/TestListenNodeBusyPortReturnsError): реальная ошибка Windows —
+// syscall.Errno(10048), то есть windows.WSAEADDRINUSE. syscall.EADDRINUSE — это
+// ВЫМЫШЛЕННАЯ кросс-платформенная константа Go (APPLICATION_ERROR+2), которую
+// сетевые вызовы на Windows никогда не возвращают: errors.Is с ней всегда false.
 func listenNode(port int) (*net.UDPConn, error) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
 	if err == nil {
 		return conn, nil
+	}
+	if errors.Is(err, windows.WSAEADDRINUSE) {
+		return nil, fmt.Errorf("порт %d занят: %w", port, err)
 	}
 	log.Printf("dual-stack сокет недоступен (%v) — работаем только по IPv4", err)
 	return net.ListenUDP("udp4", &net.UDPAddr{Port: port})
@@ -535,11 +647,23 @@ func (s *Session) bringUpNode() error {
 	}
 	selfIP := proto.VirtualIP(selfID)
 
-	conn, err := listenNode(0)
+	s.mu.Lock()
+	savedPort := s.savedPort
+	s.mu.Unlock()
+	port, savePort := PickPort(savedPort)
+	conn, err := listenNode(port)
 	if err != nil {
 		return fmt.Errorf("udp listen: %w", err)
 	}
 	localPort := conn.LocalAddr().(*net.UDPAddr).Port
+	if savePort {
+		s.mu.Lock()
+		cb := s.onPortChosen
+		s.mu.Unlock()
+		if cb != nil {
+			cb(localPort)
+		}
+	}
 
 	// Внешний адрес узнаём один раз; дальше registerLoop-ы держат его свежим через
 	// reflex и живой STUN, см. Engine.
@@ -561,6 +685,16 @@ func (s *Session) bringUpNode() error {
 	// Имя узла движку: пирам, узнанным без сигналки (DHT), его больше неоткуда
 	// взять — они получат его кадром FrameHello.
 	engine.SetSelfName(s.nodeName())
+	if s.cache != nil {
+		// Только ПОДТВЕРЖДЁННЫЙ прямой адрес (движок зовёт колбэк лишь когда пир
+		// реально ответил расшифрованным кадром) — кандидатов в кэш класть нельзя,
+		// иначе он накопит мусор из DHT и будет воспроизводить его при каждом
+		// старте. Put дешёвый (память, без диска) — колбэк в горячем пути чтения
+		// не блокирует.
+		engine.OnDirectConfirmed(func(tag [32]byte, id proto.PeerID, addr netip.AddrPort) {
+			s.cache.Put(hex.EncodeToString(tag[:]), id.String(), addr.String())
+		})
+	}
 
 	s.mu.Lock()
 	relayAddr := s.relayAddr
@@ -610,9 +744,35 @@ func (s *Session) bringUpNode() error {
 	}()
 	go s.reflexFanout(kick, nodeStop)
 	go s.logLoop(nodeStop)
+	if s.cache != nil {
+		go s.cacheSaveLoop(nodeStop)
+	}
 
 	log.Printf("узел поднят, виртуальный IP %s", selfIP)
 	return nil
+}
+
+// cacheSaveInterval — как часто сбрасываем кэш подтверждённых endpoint'ов на
+// диск. Не на каждое подтверждение (см. OnDirectConfirmed выше) — файл не
+// должен стать источником дисковой нагрузки под игровым трафиком.
+const cacheSaveInterval = time.Minute
+
+// cacheSaveLoop периодически сохраняет кэш endpoint'ов, пока узел поднят.
+// Последний сброс — в tearDownNode, чтобы самое свежее подтверждение перед
+// выходом не потерялось.
+func (s *Session) cacheSaveLoop(nodeStop <-chan struct{}) {
+	ticker := time.NewTicker(cacheSaveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-nodeStop:
+			return
+		case <-ticker.C:
+			if err := s.cache.Save(); err != nil {
+				log.Printf("кэш endpoint'ов: сохранение не удалось: %v", err)
+			}
+		}
+	}
 }
 
 // tearDownNode снимает узел (когда сетей не осталось). Вызывать под opMu.
@@ -628,8 +788,16 @@ func (s *Session) tearDownNode() {
 	s.peerID, s.selfEndpoint = "", ""
 	s.mu.Unlock()
 
+	// nodeStop закрываем ДО финального Save: останавливаем cacheSaveLoop первым,
+	// чтобы он не гонялся с этим сохранением за c.mu (не гонка на корректность —
+	// Save потокобезопасен — а просто чтобы порядок был предсказуемым).
 	if nodeStop != nil {
 		close(nodeStop)
+	}
+	if s.cache != nil {
+		if err := s.cache.Save(); err != nil {
+			log.Printf("кэш endpoint'ов: сохранение при выходе не удалось: %v", err)
+		}
 	}
 	if dev != nil {
 		dev.Close()

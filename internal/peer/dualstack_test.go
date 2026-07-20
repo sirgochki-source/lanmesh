@@ -4,6 +4,7 @@ package peer
 
 import (
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -75,6 +76,47 @@ func TestDualStackReachesIPv4Peer(t *testing.T) {
 	v := ds.eng.PeerViews(testTag)
 	if len(v) != 1 || strings.Contains(v[0].Endpoint, "::ffff:") {
 		t.Fatalf("адрес v4-пира не размаплен на чтении (ожидали 127.0.0.1:порт): %+v", v)
+	}
+}
+
+// Движок обязан сообщать наружу о подтверждённом прямом адресе — на этом
+// держится кэш endpoint'ов. Кандидаты не годятся: в кэш должно попадать только
+// то, по чему пир реально ответил.
+func TestOnDirectConfirmedFires(t *testing.T) {
+	if testing.Short() {
+		t.Skip("ждёт пробития NAT до 25с — только полный прогон")
+	}
+
+	sealer, err := crypto.NewSealer(crypto.DeriveNetworkKey("кэш", "пароль"))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	a, b := newNode(t, sealer), newNode(t, sealer)
+	defer a.conn.Close()
+	defer b.conn.Close()
+
+	got := make(chan string, 4)
+	a.eng.OnDirectConfirmed(func(tag [relayTagLen]byte, id proto.PeerID, addr netip.AddrPort) {
+		if id == b.id {
+			select {
+			case got <- addr.String():
+			default:
+			}
+		}
+	})
+
+	a.eng.SyncPeers(testTag, []proto.PeerInfo{b.info("B")})
+	b.eng.SyncPeers(testTag, []proto.PeerInfo{a.info("A")})
+	go a.eng.Run()
+	go b.eng.Run()
+
+	select {
+	case addr := <-got:
+		if addr != b.conn.LocalAddr().(*net.UDPAddr).AddrPort().String() {
+			t.Fatalf("подтверждён не тот адрес: %s", addr)
+		}
+	case <-time.After(25 * time.Second):
+		t.Fatal("колбэк подтверждения не сработал")
 	}
 }
 
