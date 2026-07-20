@@ -53,6 +53,10 @@ const maxPeersPerRound = 64
 // занимает около 20с, тёплый — единицы секунд; берём с запасом.
 const roundTimeout = 60 * time.Second
 
+// announceGrace — сколько после остановки обхода ждём, чтобы наш announce_peer к
+// уже найденным узлам успел уйти в сеть, прежде чем закрыть Announce.
+const announceGrace = 5 * time.Second
+
 // Discoverer — узел DHT со своим UDP-сокетом, общий на все сети lanmesh.
 // Отдельный сокет, а не боевой: пакеты DHT — открытый bencode от чужих клиентов,
 // мешать их с шифрованными кадрами на одном порту значило бы разбирать «чей
@@ -129,15 +133,34 @@ func (d *Discoverer) Round(ctx context.Context, key [crypto.KeySize]byte, port i
 	now := time.Now().UTC()
 	hashes := [][20]byte{Infohash(key, now), Infohash(key, now.AddDate(0, 0, -1))}
 
+	// Оба инфохэша обходим ПАРАЛЛЕЛЬНО: round1 у каждого может висеть до roundTimeout
+	// (медленная/режущая UDP сеть — типично для мобильного оператора), и
+	// последовательный вызов удваивал бы такт цикла, растягивая переанонс вдвое
+	// именно там, где важнее всего быстро реагировать на смену адреса.
+	type res struct {
+		found []string
+		err   error
+	}
+	results := make([]res, len(hashes))
+	var wg sync.WaitGroup
+	for i, ih := range hashes {
+		wg.Add(1)
+		go func(i int, ih [20]byte) {
+			defer wg.Done()
+			f, err := d.round1(ctx, ih, port)
+			results[i] = res{found: f, err: err}
+		}(i, ih)
+	}
+	wg.Wait()
+
 	seen := make(map[string]bool, maxPeersPerRound)
 	out := make([]string, 0, maxPeersPerRound)
 	var firstErr error
-	for _, ih := range hashes {
-		found, err := d.round1(ctx, ih, port)
-		if err != nil && firstErr == nil {
-			firstErr = err
+	for _, r := range results {
+		if r.err != nil && firstErr == nil {
+			firstErr = r.err
 		}
-		for _, s := range found {
+		for _, s := range r.found {
 			if seen[s] || len(out) >= maxPeersPerRound {
 				continue
 			}
@@ -161,7 +184,24 @@ func (d *Discoverer) round1(ctx context.Context, ih [20]byte, port int) ([]strin
 	if err != nil {
 		return nil, err
 	}
-	defer a.Close()
+
+	// Close() отменяет и наш announce_peer к найденным узлам. Поэтому по завершению
+	// поиска (таймаут / канал / набрали хватит) сначала гасим ТОЛЬКО обход
+	// (StopTraversing), даём announce-фазе доехать до сокета в пределах announceGrace,
+	// и лишь потом Close(). Иначе свежая запись о нас могла вовсе не уйти в DHT —
+	// раунд выглядел бы успешным, а анонса не было (нас никто не находил бы).
+	finishAnnounce := func() {
+		if port <= 0 {
+			a.Close() // мы не анонсируем — ждать нечего
+			return
+		}
+		a.StopTraversing()
+		select {
+		case <-a.Finished():
+		case <-time.After(announceGrace):
+		}
+		a.Close()
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, roundTimeout)
 	defer cancel()
@@ -171,11 +211,14 @@ func (d *Discoverer) round1(ctx context.Context, ih [20]byte, port int) ([]strin
 	for {
 		select {
 		case <-ctx.Done():
-			return out, nil // таймаут раунда — не ошибка, отдаём что успели
+			finishAnnounce() // таймаут поиска — не ошибка, но анонс дошлём
+			return out, nil
 		case <-a.Finished():
+			a.Close()
 			return out, nil
 		case v, ok := <-a.Peers:
 			if !ok {
+				finishAnnounce()
 				return out, nil
 			}
 			for _, p := range v.Peers {
@@ -186,6 +229,7 @@ func (d *Discoverer) round1(ctx context.Context, ih [20]byte, port int) ([]strin
 				seen[s] = true
 				out = append(out, s)
 				if len(out) >= maxPeersPerRound {
+					finishAnnounce()
 					return out, nil
 				}
 			}
