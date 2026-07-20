@@ -32,16 +32,15 @@ import (
 	"golang.org/x/sys/windows"
 
 	"github.com/sirgochki-source/lanmesh/internal/app"
-	"github.com/sirgochki-source/lanmesh/internal/crypto"
 	"github.com/sirgochki-source/lanmesh/internal/defaults"
 	"github.com/sirgochki-source/lanmesh/internal/logbuf"
-	"github.com/sirgochki-source/lanmesh/internal/signal"
 )
 
-// netTag — hex-тег сети из имени+пароля (тот же, что у сессии/сигналки). Нужен,
-// чтобы сопоставлять сети панели (она шлёт тег) с сохранёнными профилями.
-func netTag(name, password string) string {
-	return signal.NetworkTag(crypto.DeriveNetworkKey(name, password))
+// netTag — hex-тег сети из профиля (имя+пароль+режим обнаружения — он вшит в
+// ключ, см. crypto.DeriveNetworkKeyMode). Нужен, чтобы сопоставлять сети панели
+// (она шлёт тег) с сохранёнными профилями.
+func netTag(p NetProfile) string {
+	return app.NetworkTag(p.Name, p.Password, p.Discovery)
 }
 
 //go:embed web
@@ -72,6 +71,11 @@ var (
 type NetProfile struct {
 	Name     string `json:"name"`
 	Password string `json:"password"`
+	// Discovery — способ обнаружения пиров этой сети: пусто/"signal" (сигналки)
+	// или "dht" (публичная DHT, ни одного обращения к серверам). Задаётся при
+	// добавлении сети и не меняется на ходу: смена режима — это, по сути, другой
+	// способ вообще существовать в сети, проще выйти и войти заново.
+	Discovery string `json:"discovery,omitempty"`
 }
 
 // Config — сохранённые настройки. Networks — список сетей, к которым узел
@@ -97,21 +101,22 @@ type Config struct {
 }
 
 // addNetwork добавляет сеть в список без дублей (по имени). Вызывать под cfgMu.
-func (c *Config) addNetwork(name, password string) {
+func (c *Config) addNetwork(name, password, discovery string) {
 	for i, p := range c.Networks {
 		if p.Name == name {
 			c.Networks[i].Password = password
+			c.Networks[i].Discovery = discovery
 			return
 		}
 	}
-	c.Networks = append(c.Networks, NetProfile{Name: name, Password: password})
+	c.Networks = append(c.Networks, NetProfile{Name: name, Password: password, Discovery: discovery})
 }
 
 // removeNetworkByTag убирает из списка сеть с данным hex-тегом. Вызывать под cfgMu.
 func (c *Config) removeNetworkByTag(tag string) {
 	out := c.Networks[:0]
 	for _, p := range c.Networks {
-		if netTag(p.Name, p.Password) != tag {
+		if netTag(p) != tag {
 			out = append(out, p)
 		}
 	}
@@ -169,7 +174,7 @@ func main() {
 	// Автоподключение ко всем сохранённым сетям (мультисеть). Первая поднимает
 	// узел (STUN+адаптер), остальные добавляются в него мгновенно.
 	for _, p := range autoNets {
-		if err := sess.AddNetwork(p.Name, p.Password); err != nil {
+		if err := sess.AddNetworkMode(p.Name, p.Password, p.Discovery); err != nil {
 			log.Printf("автоподключение %q: %v", p.Name, err)
 		}
 	}
@@ -511,15 +516,16 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 	// (сеть не пропадает из списка, а становится серой). Тег совпадает с NetworkView.Tag
 	// у активной сети — фронт по нему сопоставляет активную/неактивную.
 	type savedNet struct {
-		Name string `json:"name"`
-		Tag  string `json:"tag"`
+		Name      string `json:"name"`
+		Tag       string `json:"tag"`
+		Discovery string `json:"discovery,omitempty"`
 	}
 	cfgMu.Lock()
 	sendLogs := cfg.sendLogs()
 	cfgName := cfg.SelfName // своё имя из конфига (пусто = используется hostname)
 	savedList := make([]savedNet, 0, len(cfg.Networks))
 	for _, p := range cfg.Networks {
-		savedList = append(savedList, savedNet{Name: p.Name, Tag: netTag(p.Name, p.Password)})
+		savedList = append(savedList, savedNet{Name: p.Name, Tag: netTag(p), Discovery: p.Discovery})
 	}
 	cfgSignals := append([]string(nil), cfg.Signals...)
 	cfgRelay := ""
@@ -552,6 +558,11 @@ func handleAddNetwork(w http.ResponseWriter, r *http.Request) {
 		Password string   `json:"password"`
 		Signals  []string `json:"signals"` // из приглашения; пусто = не трогать
 		Relay    *string  `json:"relay"`   // из приглашения; nil = не трогать, "" = без релея
+		// DHT — искать участников через публичную DHT вместо сигналок.
+		DHT bool `json:"dht"`
+		// DHTRelay — разрешить такой сети ретранслятор как запасной путь. Учитывается
+		// только вместе с DHT; вшивается в ключ сети, поэтому одинаков у всех.
+		DHTRelay bool `json:"dhtRelay"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, map[string]string{"error": "bad json"}, http.StatusBadRequest)
@@ -563,12 +574,31 @@ func handleAddNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mode := app.DiscoverySignal
+	if req.DHT {
+		mode = app.DiscoveryDHT
+		if req.DHTRelay {
+			mode = app.DiscoveryDHTRelay
+		}
+	}
+
 	// Серверы из приглашения принимаем ДО поднятия узла (на ходу их менять нельзя).
 	// Если вход в сеть затем не удастся — откатываем, чтобы не остаться с чужими
-	// серверами без самой сети.
-	note, revert := applyInviteServers(req.Signals, req.Relay)
+	// серверами без самой сети. Для DHT-сети серверов из приглашения не бывает:
+	// смысл режима в том, чтобы их не было вовсе.
+	var note string
+	var revert func()
+	switch mode {
+	case app.DiscoverySignal:
+		note, revert = applyInviteServers(req.Signals, req.Relay)
+	case app.DiscoveryDHTRelay:
+		// Сигналок у сети нет, а вот ретранслятор должен быть ТОТ ЖЕ, что у
+		// пригласившего: релей сводит пиров по паре (тег, peerID), и на разных
+		// серверах они друг друга не найдут.
+		note, revert = applyInviteServers(nil, req.Relay)
+	}
 
-	if err := sess.AddNetwork(req.Network, req.Password); err != nil {
+	if err := sess.AddNetworkMode(req.Network, req.Password, mode); err != nil {
 		if revert != nil {
 			revert()
 		}
@@ -577,7 +607,7 @@ func handleAddNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfgMu.Lock()
-	cfg.addNetwork(req.Network, req.Password)
+	cfg.addNetwork(req.Network, req.Password, mode)
 	saveConfig(cfg)
 	cfgMu.Unlock()
 
@@ -774,7 +804,7 @@ func handleReconnect(w http.ResponseWriter, r *http.Request) {
 
 	var errs []string
 	for _, p := range nets {
-		if err := sess.AddNetwork(p.Name, p.Password); err != nil {
+		if err := sess.AddNetworkMode(p.Name, p.Password, p.Discovery); err != nil {
 			errs = append(errs, p.Name+": "+err.Error())
 		}
 	}
@@ -896,10 +926,10 @@ func handleInvite(w http.ResponseWriter, r *http.Request) {
 
 	cfgMu.Lock()
 	c := cfg
-	var name, pass string
+	var name, pass, disc string
 	for _, p := range cfg.Networks {
-		if tag == "" || netTag(p.Name, p.Password) == tag {
-			name, pass = p.Name, p.Password
+		if tag == "" || netTag(p) == tag {
+			name, pass, disc = p.Name, p.Password, p.Discovery
 			break
 		}
 	}
@@ -912,10 +942,21 @@ func handleInvite(w http.ResponseWriter, r *http.Request) {
 	q := url.Values{}
 	q.Set("net", name)
 	q.Set("pass", pass)
-	for _, u := range effectiveSignals(c) {
-		q.Add("sig", u)
+	if disc == app.DiscoveryDHT || disc == app.DiscoveryDHTRelay {
+		// Режим обнаружения — свойство сети, а не выбор каждого клиента: он вшит в
+		// ключ, поэтому приглашение обязано его нести, иначе друг просто не попадёт
+		// в ту же сеть. Сигналок у такой сети нет; адрес ретранслятора кладём, только
+		// если он ей вообще разрешён.
+		q.Set("disc", disc)
+		if disc == app.DiscoveryDHTRelay {
+			q.Set("relay", effectiveRelay(c))
+		}
+	} else {
+		for _, u := range effectiveSignals(c) {
+			q.Add("sig", u)
+		}
+		q.Set("relay", effectiveRelay(c)) // "" — осознанно «без релея»
 	}
-	q.Set("relay", effectiveRelay(c)) // "" — осознанно «без релея»
 	link := "lanmesh://join?" + q.Encode()
 	writeJSON(w, map[string]string{"link": link}, http.StatusOK)
 }
