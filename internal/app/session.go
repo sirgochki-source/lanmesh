@@ -513,6 +513,19 @@ func (s *Session) Stop() {
 	s.tearDownNode()
 }
 
+// listenNode поднимает боевой UDP-сокет. Просим "udp" с неуказанным IP — Go
+// ставит IPV6_V6ONLY=0, и один сокет обслуживает оба семейства. Фолбэк на udp4
+// нужен там, где IPv6-стек отключён политикой или отсутствует: узел обязан
+// работать ровно как раньше, а не падать при старте.
+func listenNode(port int) (*net.UDPConn, error) {
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
+	if err == nil {
+		return conn, nil
+	}
+	log.Printf("dual-stack сокет недоступен (%v) — работаем только по IPv4", err)
+	return net.ListenUDP("udp4", &net.UDPAddr{Port: port})
+}
+
 // bringUpNode поднимает общий узел: сокет, STUN, адаптер, движок и его фоновые
 // горутины. Вызывать под opMu, БЕЗ mu (STUN и адаптер медленные).
 func (s *Session) bringUpNode() error {
@@ -522,7 +535,7 @@ func (s *Session) bringUpNode() error {
 	}
 	selfIP := proto.VirtualIP(selfID)
 
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: 0})
+	conn, err := listenNode(0)
 	if err != nil {
 		return fmt.Errorf("udp listen: %w", err)
 	}
@@ -1354,9 +1367,11 @@ func (s *Session) logLoop(nodeStop <-chan struct{}) {
 	}
 }
 
-// localEndpoints собирает "локальный_IPv4:порт" по пригодным интерфейсам —
-// кандидаты на случай, если пиры окажутся в одной локалке. Мусор отсеиваем:
-// loopback, link-local 169.254.x (APIPA) и 25.x (наш же виртуальный адаптер).
+// localEndpoints собирает "локальный_адрес:порт" (IPv4 и глобальные IPv6) по
+// пригодным интерфейсам — кандидаты на случай, если пиры окажутся в одной
+// локалке или у обоих есть нативный IPv6. Мусор отсеиваем: loopback,
+// link-local (169.254.x/APIPA и fe80::), 25.x (наш же виртуальный адаптер) и
+// приватные/ULA-адреса IPv6 (fc00::/7 — не маршрутизируется в интернете).
 func localEndpoints(port int) []string {
 	var out []string
 	addrs, err := net.InterfaceAddrs()
@@ -1368,11 +1383,19 @@ func localEndpoints(port int) []string {
 		if !ok || ipnet.IP.IsLoopback() || ipnet.IP.IsLinkLocalUnicast() {
 			continue
 		}
-		ip4 := ipnet.IP.To4()
-		if ip4 == nil || ip4[0] == 25 {
+		if ip4 := ipnet.IP.To4(); ip4 != nil {
+			if ip4[0] == 25 {
+				continue // наш же виртуальный адаптер
+			}
+			out = append(out, fmt.Sprintf("%s:%d", ip4.String(), port))
 			continue
 		}
-		out = append(out, fmt.Sprintf("%s:%d", ip4.String(), port))
+		// IPv6: берём только глобальные юникасты. ULA (fc00::/7) не маршрутизируется
+		// в интернете, а link-local отсеян выше. STUN для них не нужен — NAT нет,
+		// адрес интерфейса и есть внешний адрес.
+		if ipnet.IP.IsGlobalUnicast() && !ipnet.IP.IsPrivate() {
+			out = append(out, fmt.Sprintf("[%s]:%d", ipnet.IP.String(), port))
+		}
 	}
 	return out
 }
