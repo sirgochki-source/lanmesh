@@ -1367,11 +1367,60 @@ func (s *Session) logLoop(nodeStop <-chan struct{}) {
 	}
 }
 
+// Teredo (2001:0000::/32) и 6to4 (2002::/16, устаревший механизм — см. RFC 7526) —
+// это IPv6-адреса, туннелированные поверх IPv4/UDP именно для прохода СКВОЗЬ NAT.
+// Смысл добавления IPv6 в кандидаты — что при нативном IPv6 NAT нет и адрес
+// интерфейса совпадает с внешним, пробивать нечего. Для этих двух туннелей
+// посылка «NAT нет» ложна: пакет всё равно идёт через чужой релей с
+// непредсказуемыми задержкой и надёжностью, а слот в кандидатах (потолок
+// maxCandidates=12 в internal/peer) вытесняет рабочие адреса. Поэтому исключаем
+// их явно, а не полагаемся на IsGlobalUnicast — он для обоих возвращает true.
+var (
+	ipv6TeredoPrefix    = netip.MustParsePrefix("2001:0000::/32")
+	ipv6SixToFourPrefix = netip.MustParsePrefix("2002::/16")
+)
+
+// isTunneledIPv6 сообщает, что addr — Teredo или 6to4 (см. комментарий выше).
+func isTunneledIPv6(addr netip.Addr) bool {
+	return ipv6TeredoPrefix.Contains(addr) || ipv6SixToFourPrefix.Contains(addr)
+}
+
+// isEligibleLocalIP решает, годится ли адрес сетевого интерфейса в кандидаты
+// localEndpoints. Отсеиваем: loopback, link-local (169.254.x/APIPA и fe80::),
+// 25.x (наш же виртуальный адаптер), приватные/ULA-адреса IPv6 (fc00::/7 — не
+// маршрутизируется в интернете) и туннели Teredo/6to4 (см. isTunneledIPv6).
+func isEligibleLocalIP(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		return ip4[0] != 25 // наш же виртуальный адаптер
+	}
+	// IPv6: берём только глобальные юникасты, не приватные и не туннели.
+	// STUN для них не нужен — NAT нет, адрес интерфейса и есть внешний адрес.
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() {
+		return false
+	}
+	addr, ok := netip.AddrFromSlice(ip.To16())
+	if !ok {
+		return true // не смогли разобрать как netip.Addr — ведём себя как раньше
+	}
+	return !isTunneledIPv6(addr)
+}
+
+// formatEndpoint форматирует ip:port кандидата. Для IPv6 адрес обязан быть в
+// квадратных скобках — без них netip.ParseAddrPort на приёмной стороне не
+// сможет отличить разделитель адреса от разделителя порта.
+func formatEndpoint(ip net.IP, port int) string {
+	if ip4 := ip.To4(); ip4 != nil {
+		return fmt.Sprintf("%s:%d", ip4.String(), port)
+	}
+	return fmt.Sprintf("[%s]:%d", ip.String(), port)
+}
+
 // localEndpoints собирает "локальный_адрес:порт" (IPv4 и глобальные IPv6) по
 // пригодным интерфейсам — кандидаты на случай, если пиры окажутся в одной
-// локалке или у обоих есть нативный IPv6. Мусор отсеиваем: loopback,
-// link-local (169.254.x/APIPA и fe80::), 25.x (наш же виртуальный адаптер) и
-// приватные/ULA-адреса IPv6 (fc00::/7 — не маршрутизируется в интернете).
+// локалке или у обоих есть нативный IPv6. Отбор адресов — в isEligibleLocalIP.
 func localEndpoints(port int) []string {
 	var out []string
 	addrs, err := net.InterfaceAddrs()
@@ -1380,22 +1429,10 @@ func localEndpoints(port int) []string {
 	}
 	for _, a := range addrs {
 		ipnet, ok := a.(*net.IPNet)
-		if !ok || ipnet.IP.IsLoopback() || ipnet.IP.IsLinkLocalUnicast() {
+		if !ok || !isEligibleLocalIP(ipnet.IP) {
 			continue
 		}
-		if ip4 := ipnet.IP.To4(); ip4 != nil {
-			if ip4[0] == 25 {
-				continue // наш же виртуальный адаптер
-			}
-			out = append(out, fmt.Sprintf("%s:%d", ip4.String(), port))
-			continue
-		}
-		// IPv6: берём только глобальные юникасты. ULA (fc00::/7) не маршрутизируется
-		// в интернете, а link-local отсеян выше. STUN для них не нужен — NAT нет,
-		// адрес интерфейса и есть внешний адрес.
-		if ipnet.IP.IsGlobalUnicast() && !ipnet.IP.IsPrivate() {
-			out = append(out, fmt.Sprintf("[%s]:%d", ipnet.IP.String(), port))
-		}
+		out = append(out, formatEndpoint(ipnet.IP, port))
 	}
 	return out
 }
