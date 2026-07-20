@@ -77,3 +77,44 @@ func TestSealNonceIsUnique(t *testing.T) {
 		t.Fatal("нонс повторился между двумя Seal — конфиденциальность под угрозой")
 	}
 }
+
+// Способ обнаружения вшит в ключ: одна и та же пара имя+пароль в разных режимах —
+// это РАЗНЫЕ сети. Так участник, ошибившийся режимом, получает честное «не в этой
+// сети», а не подвешенное состояние «вроде та же сеть, но никого не видно».
+func TestDiscoveryModeChangesKey(t *testing.T) {
+	sig := DeriveNetworkKeyMode("myteam", "hunter2", "signal")
+	dht := DeriveNetworkKeyMode("myteam", "hunter2", "dht")
+	if sig == dht {
+		t.Fatal("режим обнаружения не влияет на ключ сети")
+	}
+	// Режим сигналок обязан совпадать с прежней дериваций — иначе все
+	// существующие сети и старые клиенты отвалятся при обновлении.
+	if sig != DeriveNetworkKey("myteam", "hunter2") {
+		t.Fatal("ключ обычной сети изменился — сломается совместимость")
+	}
+	// Пустой режим = обычный (в конфиге старых версий поля нет).
+	if DeriveNetworkKeyMode("myteam", "hunter2", "") != sig {
+		t.Fatal("пустой режим должен означать обычную сеть")
+	}
+}
+
+// Соли режимов не должны пересекаться ни при каком имени сети: иначе имя вида
+// "dht|foo" могло бы подделать ключ чужой DHT-сети.
+func TestDiscoveryModeSaltsDoNotCollide(t *testing.T) {
+	for _, name := range []string{"dht|foo", "|dht|foo", "-dht|foo", "foo"} {
+		if DeriveNetworkKeyMode(name, "pw", "signal") == DeriveNetworkKeyMode("foo", "pw", "dht") {
+			t.Fatalf("имя %q подделало ключ DHT-сети", name)
+		}
+	}
+}
+
+// Разрешение на ретранслятор — тоже часть режима, а значит и ключа: иначе
+// «у меня релей разрешён, у тебя нет» дало бы пару, которая молча не соединяется.
+func TestRelayPermissionChangesKey(t *testing.T) {
+	pure := DeriveNetworkKeyMode("myteam", "hunter2", "dht")
+	withRelay := DeriveNetworkKeyMode("myteam", "hunter2", "dht+relay")
+	sig := DeriveNetworkKeyMode("myteam", "hunter2", "signal")
+	if pure == withRelay || pure == sig || withRelay == sig {
+		t.Fatal("режимы дали пересекающиеся ключи")
+	}
+}
