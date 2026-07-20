@@ -197,10 +197,17 @@ func TestSignalHiccupDoesNotDropPeer(t *testing.T) {
 		t.Fatalf("потерян пробитый endpoint: было %v, стало %v", activeBefore, activeAfter)
 	}
 
-	// А вот пир, которого сигналка не отдаёт долго, должен-таки забыться.
+	// А вот пир, которого сигналка долго не отдаёт И от которого нет пакетов,
+	// должен-таки забыться. Молчание тут обязательно: пока трафик идёт, пир
+	// остаётся в таблице несмотря на сигналку (см. TestLivePeerSurvivesAbsence-
+	// FromSignal) — иначе участник, переставший регистрироваться, терял бы живую
+	// связь. Поэтому сначала глушим B, потом отматываем время.
+	b.conn.Close()
 	a.eng.mu.Lock()
 	for _, ps := range a.eng.nets[testTag].peers {
 		ps.absentSince = time.Now().Add(-peerForget - time.Second)
+		ps.lastRecv = time.Now().Add(-peerForget - time.Second)
+		ps.lastRelayRecv = time.Time{}
 	}
 	a.eng.mu.Unlock()
 	a.eng.SyncPeers(testTag, nil)
