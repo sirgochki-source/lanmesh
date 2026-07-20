@@ -2,6 +2,7 @@ package peer
 
 import (
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -28,7 +29,7 @@ func startFakeRelay(t *testing.T) *fakeRelay {
 	return r
 }
 
-func (r *fakeRelay) addr() *net.UDPAddr { return r.conn.LocalAddr().(*net.UDPAddr) }
+func (r *fakeRelay) addr() netip.AddrPort { return r.conn.LocalAddr().(*net.UDPAddr).AddrPort() }
 
 func (r *fakeRelay) run() {
 	type key struct {
@@ -161,7 +162,7 @@ func TestStaleDirectPathRoutesDataViaRelay(t *testing.T) {
 	b := newNode(t, sealer) // только ради валидного id/ip — не запускаем
 	defer b.conn.Close()
 
-	a.eng.UseRelay(probe.LocalAddr().(*net.UDPAddr))
+	a.eng.UseRelay(probe.LocalAddr().(*net.UDPAddr).AddrPort())
 
 	bi := b.info("B")
 	bi.Endpoints = []string{"192.0.2.1:9"} // мёртвый прямой адрес (RFC 5737)
@@ -169,7 +170,7 @@ func TestStaleDirectPathRoutesDataViaRelay(t *testing.T) {
 
 	// Приводим пира в состояние «прямой путь протух»: active выставлен на мёртвый
 	// адрес, пакетов оттуда давно не было, а relay уже разрешён (firstSeen стар).
-	dead := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 9}
+	dead := netip.AddrPortFrom(netip.AddrFrom4([4]byte{192, 0, 2, 1}), 9)
 	var ps *peerState
 	a.eng.mu.Lock()
 	for _, p := range a.eng.nets[testTag].peers {
@@ -237,12 +238,12 @@ func TestRelayPacketDoesNotConfirmDirectPath(t *testing.T) {
 		v := a.eng.PeerViews(testTag)
 		if len(v) == 1 && v[0].Status == "relay" {
 			a.eng.mu.RLock()
-			var active *net.UDPAddr
+			var active netip.AddrPort
 			for _, ps := range a.eng.nets[testTag].peers {
 				active = ps.active
 			}
 			a.eng.mu.RUnlock()
-			if active != nil {
+			if active.IsValid() {
 				t.Fatalf("пакет через relay подтвердил прямой endpoint %v — это баг", active)
 			}
 			return

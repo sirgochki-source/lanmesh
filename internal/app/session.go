@@ -556,7 +556,12 @@ func (s *Session) bringUpNode() error {
 		if raddr, err := net.ResolveUDPAddr("udp4", relayAddr); err != nil {
 			log.Printf("ретранслятор %s не разрешился (%v) — только прямые соединения", relayAddr, err)
 		} else {
-			engine.UseRelay(raddr)
+			// Резолвер отдаёт IPv4 в 16-байтовой форме, и AddrPort() из неё выходит
+			// ::ffff:a.b.c.d — движок же сверяет адрес отправителя с релеем
+			// оператором == по unmapped-форме. Без Unmap сверка не сошлась бы
+			// никогда, и кадры от ретранслятора шли бы мимо распаковки.
+			ap := raddr.AddrPort()
+			engine.UseRelay(netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()))
 			log.Printf("ретранслятор: %s (%s)", relayAddr, raddr)
 		}
 	}

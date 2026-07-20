@@ -195,7 +195,7 @@ func TestRelayForbiddenNetworkNeverBinds(t *testing.T) {
 	a.eng.AddNetwork(openTag, sealer, "с релеем")
 	a.eng.SetNetworkRelay(testTag, false)
 	a.eng.SetNetworkRelay(openTag, true)
-	a.eng.UseRelay(relay.LocalAddr().(*net.UDPAddr))
+	a.eng.UseRelay(relay.LocalAddr().(*net.UDPAddr).AddrPort())
 
 	// Пиры нужны, чтобы движку вообще было ради чего шевелиться.
 	b := newNode(t, sealer)

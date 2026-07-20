@@ -3,6 +3,7 @@ package peer
 import (
 	"io"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -166,12 +167,12 @@ func TestSignalHiccupDoesNotDropPeer(t *testing.T) {
 	}
 
 	a.eng.mu.RLock()
-	var activeBefore *net.UDPAddr
+	var activeBefore netip.AddrPort
 	for _, ps := range a.eng.nets[testTag].peers {
 		activeBefore = ps.active
 	}
 	a.eng.mu.RUnlock()
-	if activeBefore == nil {
+	if !activeBefore.IsValid() {
 		t.Fatal("endpoint не подтверждён, тест бессмысленен")
 	}
 
@@ -188,12 +189,12 @@ func TestSignalHiccupDoesNotDropPeer(t *testing.T) {
 	}
 
 	a.eng.mu.RLock()
-	var activeAfter *net.UDPAddr
+	var activeAfter netip.AddrPort
 	for _, ps := range a.eng.nets[testTag].peers {
 		activeAfter = ps.active
 	}
 	a.eng.mu.RUnlock()
-	if activeAfter == nil || activeAfter.String() != activeBefore.String() {
+	if !activeAfter.IsValid() || activeAfter.String() != activeBefore.String() {
 		t.Fatalf("потерян пробитый endpoint: было %v, стало %v", activeBefore, activeAfter)
 	}
 
@@ -297,7 +298,7 @@ func TestSettledForPolling(t *testing.T) {
 	for _, p := range a.eng.nets[testTag].peers {
 		ps = p
 	}
-	ps.active = &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}
+	ps.active = netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 1)
 	ps.lastRecv = time.Now()
 	a.eng.mu.Unlock()
 	if !a.eng.SettledForPolling() {
