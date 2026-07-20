@@ -346,9 +346,14 @@ func (e *Engine) AddProbes(tag [relayTagLen]byte, addrs []string) {
 		// ParseAddrPort, а не ResolveUDPAddr: адрес из DHT — всегда литерал ip:port,
 		// а резолвер ходил бы в DNS прямо под e.mu на любой мусор из публичной сети.
 		a, err := netip.ParseAddrPort(s)
-		if err != nil || !a.IsValid() || a.Port() == 0 {
+		if err != nil || a.Port() == 0 {
 			continue
 		}
+		// Адрес чужой (кадр DHT), может прийти в mapped-форме (::ffff:a.b.c.d).
+		// Внутри движка mapped-адресов быть не должно: Unmap реального IPv6 не
+		// трогает, а mapped IPv4 схлопывает с его же unmapped-формой — иначе один
+		// физический адрес держал бы два слота в maxProbes и не дедуплицировался.
+		a = netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
 		k := a.String()
 		if _, ok := n.probes[k]; ok {
 			// Уже знаем этот адрес — НЕ обновляем added и не сбрасываем backoff.
@@ -378,8 +383,12 @@ func (e *Engine) ProbeCount(tag [relayTagLen]byte) int {
 // UseRelay задаёт адрес ретранслятора — общий на все сети (он ведёт таблицу по
 // паре (тег, peerID), а тег у каждой сети свой). Расшифровать он ничего не может.
 func (e *Engine) UseRelay(addr netip.AddrPort) {
+	// Нормализуем здесь, а не полагаемся на вызывающего: netToTun сверяет адрес
+	// отправителя с релеем побайтово (src == relay) уже в unmapped-форме, и любой
+	// новый вызывающий, забывший Unmap у себя, тихо сломал бы всю пересылку через
+	// ретранслятор — ни один кадр от него не прошёл бы сверку.
 	e.mu.Lock()
-	e.relay = addr
+	e.relay = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
 	e.mu.Unlock()
 }
 
@@ -588,6 +597,9 @@ func (e *Engine) SyncPeers(tag [relayTagLen]byte, list []proto.PeerInfo) {
 			// Кандидаты от сигналки — литералы ip:port (их собирает localEndpoints
 			// и STUN), поэтому парсер, а не резолвер: в DNS под локом не ходим.
 			if a, err := netip.ParseAddrPort(s); err == nil {
+				// Список Endpoints пришёл от чужого узла через сигналку — нормализуем
+				// mapped-форму, см. AddProbes.
+				a = netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
 				eps = append(eps, a)
 			}
 		}
@@ -1464,7 +1476,13 @@ func mergeCandidates(ps *peerState, cands []string) {
 		// Тоже парсер, а не резолвер: кандидат приходит от пира по сети, ходить
 		// из-за него в DNS под e.mu нельзя (см. AddProbes).
 		a, err := netip.ParseAddrPort(c)
-		if err != nil || !a.IsValid() || have[a.String()] {
+		if err != nil {
+			continue
+		}
+		// Кандидат прислан чужим пиром кадром FrameAddr — нормализуем mapped-форму
+		// (см. AddProbes), иначе она не схлопнётся в дедупе с unmapped-адресом.
+		a = netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
+		if have[a.String()] {
 			continue
 		}
 		ps.endpoints = append(ps.endpoints, a)
