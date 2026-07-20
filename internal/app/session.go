@@ -368,8 +368,9 @@ func (s *Session) AddNetworkMode(network, password, discovery string) error {
 		}
 	}
 
-	s.engine.AddNetwork(tagB, sealer, network)
-	s.engine.SetNetworkRelay(tagB, usesRelay(discovery))
+	// Разрешение на релей задаём атомарно с созданием сети, одним вызовом под локом
+	// движка — иначе сеть без серверов на миг могла бы попасть в bind к релею.
+	s.engine.AddNetworkRelay(tagB, sealer, network, usesRelay(discovery))
 	s.mu.Lock()
 	s.nets[tagB] = ns
 	s.rebuildFanoutLocked()
@@ -380,7 +381,14 @@ func (s *Session) AddNetworkMode(network, password, discovery string) error {
 	} else {
 		go s.registerLoop(ns)
 	}
-	log.Printf("сеть %s подключена (обнаружение: %s)", tagShort(tag), discovery)
+	// Тег сети без серверов НЕ логируем: лог сливается в общий буфер и уходит на
+	// сигналки соседних сетей, а этот тег там не должен появляться. Для обычной
+	// сети тег и так уходит на её же сигналку штатно.
+	if usesDHT(discovery) {
+		log.Printf("сеть подключена (обнаружение: %s)", discovery)
+	} else {
+		log.Printf("сеть %s подключена (обнаружение: %s)", tagShort(tag), discovery)
+	}
 	return nil
 }
 
@@ -469,8 +477,10 @@ func (s *Session) RemoveNetwork(tag [32]byte) {
 	}
 	if usesDHT(ns.discovery) {
 		s.releaseDHT()
+		log.Printf("сеть отключена (обнаружение: %s)", ns.discovery) // тег DHT-сети в лог не пишем
+	} else {
+		log.Printf("сеть %s отключена", tagShort(tagHex))
 	}
-	log.Printf("сеть %s отключена", tagShort(tagHex))
 	if remaining == 0 {
 		s.tearDownNode()
 	}
@@ -790,6 +800,17 @@ func (s *Session) diagnosticSnapshot() []string {
 	}
 
 	for _, nv := range st.Networks {
+		// Диагностика уходит в общий буфер лога, а он потом сливается на сигналки
+		// (см. logLoop/SendDiagnostics). Сеть без серверов сознательно избегает
+		// сигналок — её имя и пиров сюда писать нельзя, иначе они уедут на сигналки
+		// ДРУГИХ сетей узла. Фильтр в отправке режет только адресатов, а не текст,
+		// поэтому режем текст здесь. Тег DHT-сети даём лишь как обезличенную отметку
+		// (он несекретен и невосстановим к имени/паролю).
+		if usesDHT(nv.Discovery) {
+			out = append(out, fmt.Sprintf("--- сеть %s: обнаружение %s, участников %d (детали не логируем)",
+				tagShort(nv.Tag), nv.Discovery, len(nv.Peers)))
+			continue
+		}
 		sig := make([]string, 0, len(nv.Signals))
 		for _, sv := range nv.Signals {
 			mark := "up"
@@ -895,6 +916,16 @@ func (s *Session) registerLoop(ns *netSession) {
 			}
 		}
 
+		// Пока шёл раунд (до 10с в HTTP), сеть могли снять (RemoveNetwork/Stop). Тогда
+		// писать состояние и звать SyncPeers нельзя: та же сеть (тот же тег) может
+		// быть уже пересоздана заново с чистой таблицей, и наш устаревший ответ
+		// подмешался бы в её состояние. Зеркалит проверку после d.Round в dhtLoop.
+		select {
+		case <-ns.stop:
+			return
+		default:
+		}
+
 		s.mu.Lock()
 		if okCount == 0 {
 			ns.signalErr = strings.Join(errs, "; ")
@@ -961,9 +992,19 @@ func (s *Session) registerLoop(ns *netSession) {
 // смены адреса у обоих сразу.
 const (
 	dhtRoundFast = 45 * time.Second
+	dhtRoundIdle = 3 * time.Minute
 	dhtRoundSlow = 10 * time.Minute
+	// dhtWarmupRounds — сколько первых раундов ищем часто, даже пока никого нет:
+	// хватает на первичную сборку сети. Дальше, если пиров так и не появилось,
+	// темп падает до dhtRoundIdle — постоянно долбить DHT на 45с, когда мы одни,
+	// незачем (нас всё равно найдут по нашему же анонсу и пробьют, а их трафик
+	// заведёт пира сам). Появился пир и путь устоялся — уходим на dhtRoundSlow.
+	dhtWarmupRounds = 8
 	// dhtSaveEvery — не чаще этого сбрасываем кэш узлов DHT на диск.
 	dhtSaveEvery = 5 * time.Minute
+	// dhtSelfMemory — сколько помним свои недавние внешние адреса, чтобы не пробивать
+	// собственный устаревший анонс (запись в DHT живёт ~2ч, берём с запасом).
+	dhtSelfMemory = 30 * time.Minute
 )
 
 // dhtLoop — цикл обнаружения сети через публичную DHT. Полная замена
@@ -991,8 +1032,15 @@ func (s *Session) dhtLoop(ns *netSession) {
 	defer cancel()
 
 	if err := d.Bootstrap(ctx); err != nil {
-		log.Printf("сеть %s: DHT bootstrap: %v", tagShort(ns.tag), err)
+		log.Printf("DHT bootstrap: %v", err) // без тега сети — лог уходит на чужие сигналки
 	}
+
+	// recentSelf — наши недавно анонсированные внешние адреса. При смене внешнего
+	// порта СТАРЫЙ наш анонс ещё какое-то время жив в чужих узлах DHT и вернётся в
+	// выдаче — фильтровать только по ТЕКУЩЕМУ ext недостаточно, иначе движок начнёт
+	// пробивать собственный устаревший адрес. Держим адрес dhtSelfMemory, с запасом
+	// перекрывая типичное время жизни записи.
+	recentSelf := make(map[string]time.Time)
 
 	for {
 		// Внешний адрес держим свежим сами: в этом режиме registerLoop, который
@@ -1019,14 +1067,30 @@ func (s *Session) dhtLoop(ns *netSession) {
 		default:
 		}
 
-		// Себя из выдачи убираем: свой же анонс вернётся нам первым, а долбить
-		// собственный внешний адрес — в лучшем случае впустую, в худшем эхо через
-		// NAT-петлю.
+		// Запоминаем текущий свой адрес и чистим протухшие из памяти.
+		roundNow := time.Now()
+		if ext != "" {
+			recentSelf[ext] = roundNow
+		}
+		for a, t := range recentSelf {
+			if roundNow.Sub(t) > dhtSelfMemory {
+				delete(recentSelf, a)
+			}
+		}
+
+		// Себя из выдачи убираем: свой анонс вернётся нам первым, а долбить
+		// собственный внешний адрес — впустую, а через NAT-петлю ещё и эхо. Режем
+		// не только текущий ext, но и недавние свои адреса (при смене порта старый
+		// наш анонс ещё жив в DHT).
 		fresh := make([]string, 0, len(found))
 		for _, a := range found {
-			if a != ext {
-				fresh = append(fresh, a)
+			if a == ext {
+				continue
 			}
+			if _, self := recentSelf[a]; self {
+				continue
+			}
+			fresh = append(fresh, a)
 		}
 		if eng != nil && len(fresh) > 0 {
 			eng.AddProbes(ns.tagB, fresh)
@@ -1051,9 +1115,13 @@ func (s *Session) dhtLoop(ns *netSession) {
 			log.Printf("DHT: кэш узлов не сохранён: %v", err)
 		}
 
+		hasPeers := eng != nil && len(eng.PeerViews(ns.tagB)) > 0
 		next := dhtRoundFast
-		if eng != nil && eng.SettledForPolling() && len(eng.PeerViews(ns.tagB)) > 0 {
-			next = dhtRoundSlow
+		switch {
+		case hasPeers && eng.SettledForPolling():
+			next = dhtRoundSlow // все пиры на свежем прямом пути — искать почти незачем
+		case !hasPeers && ns.dhtRounds > dhtWarmupRounds:
+			next = dhtRoundIdle // никого так и не нашли — снижаем темп, не долбим DHT впустую
 		}
 		select {
 		case <-ns.stop:
@@ -1064,6 +1132,42 @@ func (s *Session) dhtLoop(ns *netSession) {
 		case <-time.After(next):
 		}
 	}
+}
+
+// pickExternal выбирает внешний адрес узла из доступных источников.
+//
+// Приоритет (последний непустой выигрывает): стартовый STUN (заморожен) <
+// peer-reflex (протухает при обрыве) < публичный relay-reflex < живой STUN.
+//
+// Гистерезис: если прежний адрес cur всё ещё среди ЖИВЫХ источников — держим его,
+// не переключаясь между одновременно валидными значениями. У symmetric NAT
+// relay-reflex и живой STUN видят РАЗНЫЕ порты (разный адресат → разный маппинг),
+// и без стикинеса ext скакал бы каждый раунд, накручивая churn и рассылая пирам
+// нестабильный self-candidate.
+//
+// ВАЖНО: stunExt в гистерезис НЕ входит. Это замороженный снимок STUN с момента
+// старта узла, он не обновляется, а cur инициализируется тем же значением — так что
+// stunExt==cur на каждом вызове, и его присутствие в списке намертво приклеивало бы
+// ext к стартовому порту, глуша живой переопрос STUN. В signal-режиме это терпимо
+// (на сигналку уходит весь список кандидатов), а в DHT анонсируется РОВНО ОДИН
+// порт — заморозка означала бы вечный анонс мёртвого адреса после смены маппинга.
+// На cone NAT liveStun==stunExt, так что cur всё равно совпадёт с liveStun и адрес
+// остаётся стабильным — стикинес не теряется там, где он нужен.
+func pickExternal(cur, stunExt, selfRefl, relayPub, liveStun string) string {
+	ext := stunExt
+	for _, c := range []string{selfRefl, relayPub, liveStun} {
+		if c != "" {
+			ext = c
+		}
+	}
+	if cur != "" {
+		for _, c := range []string{selfRefl, relayPub, liveStun} {
+			if c == cur {
+				return cur
+			}
+		}
+	}
+	return ext
 }
 
 // nodeEndpoints собирает наши текущие кандидаты (общие для узла): внешний адрес
@@ -1097,27 +1201,7 @@ func (s *Session) nodeEndpoints() []string {
 	if isPublicEndpoint(relayRaw) {
 		relayPub = relayRaw
 	}
-	// Приоритет (последний непустой выигрывает): стартовый STUN (заморожен) <
-	// peer-reflex (протухает при обрыве) < публичный relay-reflex < живой STUN.
-	ext := stunExt
-	for _, c := range []string{selfRefl, relayPub, liveStun} {
-		if c != "" {
-			ext = c
-		}
-	}
-	// Гистерезис: если прежний внешний адрес всё ещё среди источников — держим его,
-	// не переключаясь между одновременно валидными значениями. У symmetric NAT
-	// relay-reflex и живой STUN видят РАЗНЫЕ порты (разный адресат → разный маппинг) —
-	// без стикинеса ext скакал каждый раунд, накручивая extChurn и ложное «адрес
-	// флапает», да ещё и рассылал пирам нестабильный self-candidate.
-	if cur != "" {
-		for _, c := range []string{stunExt, selfRefl, relayPub, liveStun} {
-			if c == cur {
-				ext = cur
-				break
-			}
-		}
-	}
+	ext := pickExternal(cur, stunExt, selfRefl, relayPub, liveStun)
 	front := make([]string, 0, 4)
 	seenEP := make(map[string]bool)
 	for _, c := range []string{ext, liveStun, relayPub, selfRefl} {
