@@ -15,12 +15,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/sirgochki-source/lanmesh/internal/crypto"
+	"github.com/sirgochki-source/lanmesh/internal/discovery/dhtdisc"
 	"github.com/sirgochki-source/lanmesh/internal/logbuf"
 	"github.com/sirgochki-source/lanmesh/internal/peer"
 	"github.com/sirgochki-source/lanmesh/internal/proto"
@@ -80,6 +82,20 @@ type NetworkView struct {
 	SignalError string          `json:"signalError"`
 	Signals     []SignalView    `json:"signals"`
 	Peers       []peer.PeerView `json:"peers"`
+
+	// Discovery — способ обнаружения сети ("signal", "dht", "dht+relay").
+	Discovery string `json:"discovery"`
+	// DHT — состояние обнаружения через DHT; nil для обычных сетей.
+	DHT *DHTView `json:"dht,omitempty"`
+}
+
+// DHTView — состояние обнаружения через публичную DHT (для панели).
+type DHTView struct {
+	Nodes  int    `json:"nodes"`  // узлов DHT в таблице маршрутизации
+	Found  int    `json:"found"`  // адресов-кандидатов в последнем раунде
+	Probes int    `json:"probes"` // сколько адресов сейчас пробивается
+	Rounds int    `json:"rounds"` // отработано раундов поиска
+	Error  string `json:"error"`  // ошибка последнего раунда
 }
 
 // SignalView — состояние одной сигналки: хост и ответила ли она в последнем раунде.
@@ -88,19 +104,54 @@ type SignalView struct {
 	Up   bool   `json:"up"`
 }
 
+// NetworkTag — hex-тег сети (имя+пароль+режим обнаружения). Тот же, что видит
+// сигналка и что стоит в NetworkView.Tag: по нему интерфейс сопоставляет
+// сохранённые профили с активными сетями.
+func NetworkTag(name, password, discovery string) string {
+	return signal.NetworkTag(crypto.DeriveNetworkKeyMode(name, password, discovery))
+}
+
+// Режимы обнаружения пиров.
+const (
+	// DiscoverySignal — как было: пиров сводят сигнальные серверы.
+	DiscoverySignal = "signal"
+	// DiscoveryDHT — обнаружение через публичную DHT сети BitTorrent, БЕЗ единого
+	// обращения к серверам: ни сигналок, ни ретранслятора (ему сеть не показывает
+	// даже свой тег). Плата — пара за симметричным NAT/CGNAT не соединится вовсе.
+	DiscoveryDHT = "dht"
+	// DiscoveryDHTRelay — то же обнаружение, но ретранслятор разрешён как запасной
+	// путь для непробиваемых пар. Отдельный режим, а не настройка: разрешение вшито
+	// в ключ сети, поэтому оно одинаково у всех участников по построению.
+	DiscoveryDHTRelay = "dht+relay"
+)
+
+// usesDHT — ищет ли режим участников через DHT (а не через сигналки).
+func usesDHT(mode string) bool { return mode == DiscoveryDHT || mode == DiscoveryDHTRelay }
+
+// usesRelay — разрешён ли сети ретранслятор. Обычным сетям — да, как и раньше.
+func usesRelay(mode string) bool { return mode != DiscoveryDHT }
+
 // netSession — одна сеть на общем узле: имя+пароль (для инвайта), тег и её цикл.
 type netSession struct {
-	name     string
-	password string // для генерации инвайта; хранится только при Remember у GUI
-	tag      string // hex — для сигналки/логов
-	tagB     [32]byte
-	stop     chan struct{} // закрывается при выходе из сети
-	kick     chan struct{} // разбудить перерегистрацию (смена внешнего адреса)
+	name      string
+	password  string // для генерации инвайта; хранится только при Remember у GUI
+	tag       string // hex — для сигналки/логов
+	tagB      [32]byte
+	key       [crypto.KeySize]byte // ключ сети — из него же выводится инфохэш DHT
+	discovery string               // DiscoverySignal | DiscoveryDHT | DiscoveryDHTRelay
+	stop      chan struct{}        // закрывается при выходе из сети
+	kick      chan struct{}        // разбудить перерегистрацию (смена внешнего адреса)
 
 	// Под mu. Доступность сигналок и ошибка — свои у каждой сети.
 	signalUp    []bool
 	peerSignals map[string][]bool
 	signalErr   string
+
+	// Под mu. Состояние DHT-обнаружения (только в режимах с DHT).
+	dhtNodes  int    // узлов в таблице DHT; 0 после раундов = DHT недоступна
+	dhtFound  int    // адресов-кандидатов, найденных в последнем раунде
+	dhtErr    string // ошибка последнего раунда
+	dhtRounds int    // сколько раундов уже отработало
 }
 
 // Session — узел mesh с несколькими сетями. Потокобезопасен.
@@ -138,6 +189,12 @@ type Session struct {
 	signalSeen   string // IP глазами сигналки (не подделать) — для сверки со STUN
 	relaySeen    string // внешний адрес глазами релея
 
+	// dht — общий на узел DHT-узел; поднимается лениво, при первой сети в режиме
+	// DiscoveryDHT, и снимается вместе с последней такой сетью. Держать его без
+	// нужды незачем: это отдельный сокет и постоянный фоновый трафик.
+	dht     *dhtdisc.Discoverer
+	dhtRefs int
+
 	engine     *peer.Engine
 	conn       *net.UDPConn
 	dev        *tun.Device
@@ -159,6 +216,15 @@ func (s *Session) SetName(name string) {
 	s.nameMu.Lock()
 	s.name = strings.TrimSpace(name)
 	s.nameMu.Unlock()
+
+	// Движок рассылает имя пирам сам (FrameHello) — там, где сигналки нет, это
+	// единственный способ доехать до чужой панели, в том числе при переименовании.
+	s.mu.Lock()
+	eng := s.engine
+	s.mu.Unlock()
+	if eng != nil {
+		eng.SetSelfName(s.nodeName())
+	}
 }
 
 // nodeName — текущее отображаемое имя: заданное пользователем или, если пусто, hostname.
@@ -224,13 +290,29 @@ func (s *Session) Start(network, password string) error { return s.AddNetwork(ne
 // не поднят. Повторный вызов с той же сетью — no-op. Возвращается, когда сеть
 // зарегистрирована в фоне (или с ошибкой поднятия узла).
 func (s *Session) AddNetwork(network, password string) error {
+	return s.AddNetworkMode(network, password, DiscoverySignal)
+}
+
+// AddNetworkMode — то же, но с явным способом обнаружения пиров: DiscoverySignal
+// (сигналки) или DiscoveryDHT (публичная DHT, ни одного обращения к серверам).
+// Режим задаётся на каждую сеть: сети с разными режимами спокойно живут на одном
+// узле, деля сокет, адаптер и внешний адрес.
+func (s *Session) AddNetworkMode(network, password, discovery string) error {
 	if network == "" || password == "" {
 		return errors.New("нужны имя сети и пароль")
+	}
+	if discovery == "" {
+		discovery = DiscoverySignal
+	}
+	switch discovery {
+	case DiscoverySignal, DiscoveryDHT, DiscoveryDHTRelay:
+	default:
+		return fmt.Errorf("неизвестный способ обнаружения %q", discovery)
 	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
-	key := crypto.DeriveNetworkKey(network, password)
+	key := crypto.DeriveNetworkKeyMode(network, password, discovery)
 	tag := signal.NetworkTag(key)
 	var tagB [32]byte
 	if raw, err := hex.DecodeString(tag); err != nil || len(raw) != len(tagB) {
@@ -264,24 +346,104 @@ func (s *Session) AddNetwork(network, password string) error {
 		}
 		return err
 	}
-	s.engine.AddNetwork(tagB, sealer, network)
-
 	ns := &netSession{
-		name:     network,
-		password: password,
-		tag:      tag,
-		tagB:     tagB,
-		stop:     make(chan struct{}),
-		kick:     make(chan struct{}, 1),
+		name:      network,
+		password:  password,
+		tag:       tag,
+		tagB:      tagB,
+		key:       key,
+		discovery: discovery,
+		stop:      make(chan struct{}),
+		kick:      make(chan struct{}, 1),
 	}
+
+	if usesDHT(discovery) {
+		// Поднимаем DHT-узел ДО того, как сеть попадёт в таблицы: иначе при отказе
+		// (сокет занят) пришлось бы разбирать полусобранное состояние.
+		if err := s.acquireDHT(); err != nil {
+			if broughtUp {
+				s.tearDownNode()
+			}
+			return err
+		}
+	}
+
+	s.engine.AddNetwork(tagB, sealer, network)
+	s.engine.SetNetworkRelay(tagB, usesRelay(discovery))
 	s.mu.Lock()
 	s.nets[tagB] = ns
 	s.rebuildFanoutLocked()
 	s.mu.Unlock()
 
-	go s.registerLoop(ns)
-	log.Printf("сеть %s подключена", tagShort(tag))
+	if usesDHT(discovery) {
+		go s.dhtLoop(ns)
+	} else {
+		go s.registerLoop(ns)
+	}
+	log.Printf("сеть %s подключена (обнаружение: %s)", tagShort(tag), discovery)
 	return nil
+}
+
+// acquireDHT поднимает общий DHT-узел (или увеличивает счётчик ссылок на него).
+// Вызывать под opMu.
+func (s *Session) acquireDHT() error {
+	s.mu.Lock()
+	if s.dht != nil {
+		s.dhtRefs++
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	d, err := dhtdisc.New(dhtNodesPath())
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	// Пока поднимали (сокет, чтение кэша), другая сеть могла успеть поднять свой —
+	// лишний закрываем, ссылки считаем на один.
+	if s.dht != nil {
+		s.dhtRefs++
+		s.mu.Unlock()
+		d.Close()
+		return nil
+	}
+	s.dht = d
+	s.dhtRefs = 1
+	s.mu.Unlock()
+	log.Printf("DHT: узел поднят на %s", d.Addr())
+	return nil
+}
+
+// releaseDHT снимает ссылку на DHT-узел и гасит его, когда сетей в этом режиме не
+// осталось. Вызывать под opMu.
+func (s *Session) releaseDHT() {
+	s.mu.Lock()
+	if s.dht == nil {
+		s.mu.Unlock()
+		return
+	}
+	s.dhtRefs--
+	if s.dhtRefs > 0 {
+		s.mu.Unlock()
+		return
+	}
+	d := s.dht
+	s.dht, s.dhtRefs = nil, 0
+	s.mu.Unlock()
+
+	d.Close()
+	log.Printf("DHT: узел снят")
+}
+
+// dhtNodesPath — файл кэша узлов DHT рядом с identity. Кэш делает вход в DHT
+// быстрым и независимым от bootstrap-узлов: они нужны, по сути, лишь в первый раз.
+func dhtNodesPath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "lanmesh", "dht-nodes.dat")
 }
 
 // RemoveNetwork выходит из сети по тегу. Если это была последняя — снимает узел.
@@ -304,6 +466,9 @@ func (s *Session) RemoveNetwork(tag [32]byte) {
 	close(ns.stop)
 	if s.engine != nil {
 		s.engine.RemoveNetwork(tag)
+	}
+	if usesDHT(ns.discovery) {
+		s.releaseDHT()
 	}
 	log.Printf("сеть %s отключена", tagShort(tagHex))
 	if remaining == 0 {
@@ -330,6 +495,9 @@ func (s *Session) Stop() {
 		close(ns.stop)
 		if eng != nil {
 			eng.RemoveNetwork(ns.tagB)
+		}
+		if usesDHT(ns.discovery) {
+			s.releaseDHT()
 		}
 	}
 	s.tearDownNode()
@@ -367,6 +535,9 @@ func (s *Session) bringUpNode() error {
 
 	engine := peer.NewEngine(conn, dev, selfID, selfIP)
 	engine.SetSTUNServers(s.stunServers)
+	// Имя узла движку: пирам, узнанным без сигналки (DHT), его больше неоткуда
+	// взять — они получат его кадром FrameHello.
+	engine.SetSelfName(s.nodeName())
 
 	s.mu.Lock()
 	relayAddr := s.relayAddr
@@ -488,10 +659,20 @@ func (s *Session) State() StateView {
 	st.UptimeSec = int64(time.Since(s.startedAt).Seconds())
 
 	for _, ns := range s.nets {
-		nv := NetworkView{Name: ns.name, Tag: ns.tag, SignalError: ns.signalErr}
-		nv.Signals = make([]SignalView, len(s.signalURLs))
-		for i, u := range s.signalURLs {
-			nv.Signals[i] = SignalView{Host: short(u), Up: i < len(ns.signalUp) && ns.signalUp[i]}
+		nv := NetworkView{Name: ns.name, Tag: ns.tag, SignalError: ns.signalErr, Discovery: ns.discovery}
+		if usesDHT(ns.discovery) {
+			// Сигнальных точек у такой сети нет вовсе — показывать их серыми было бы
+			// враньём: мы туда не ходим, а не «не дозвонились».
+			nv.SignalError = ""
+			nv.DHT = &DHTView{Nodes: ns.dhtNodes, Found: ns.dhtFound, Rounds: ns.dhtRounds, Error: ns.dhtErr}
+			if s.engine != nil {
+				nv.DHT.Probes = s.engine.ProbeCount(ns.tagB)
+			}
+		} else {
+			nv.Signals = make([]SignalView, len(s.signalURLs))
+			for i, u := range s.signalURLs {
+				nv.Signals[i] = SignalView{Host: short(u), Up: i < len(ns.signalUp) && ns.signalUp[i]}
+			}
 		}
 		if s.engine != nil {
 			nv.Peers = s.engine.PeerViews(ns.tagB)
@@ -519,12 +700,15 @@ func (s *Session) SendDiagnostics(ctx context.Context) (string, error) {
 	urls := append([]string(nil), s.signalURLs...)
 	tags := make([]string, 0, len(s.nets))
 	for _, ns := range s.nets {
+		if usesDHT(ns.discovery) {
+			continue // см. logLoop: тег DHT-сети сигналкам не показываем
+		}
 		tags = append(tags, ns.tag)
 	}
 	s.mu.Unlock()
 
 	if !up || len(tags) == 0 {
-		return "", errors.New("нет ни одной подключённой сети")
+		return "", errors.New("нет ни одной сети с обычным обнаружением (через DHT диагностика не отправляется)")
 	}
 	sort.Strings(tags)
 	first := tags[0]
@@ -770,6 +954,118 @@ func (s *Session) registerLoop(ns *netSession) {
 	}
 }
 
+// Темп обнаружения через DHT. Раунд заметно дороже опроса сигналки (обход чужих
+// узлов, десятки запросов), поэтому пока пиров нет — ищем часто, а как связь
+// установилась — редко: дальше адреса поддерживают сами пиры (FrameAddr) и живой
+// STUN, а DHT нужна лишь чтобы заметить нового участника или переоткрыться после
+// смены адреса у обоих сразу.
+const (
+	dhtRoundFast = 45 * time.Second
+	dhtRoundSlow = 10 * time.Minute
+	// dhtSaveEvery — не чаще этого сбрасываем кэш узлов DHT на диск.
+	dhtSaveEvery = 5 * time.Minute
+)
+
+// dhtLoop — цикл обнаружения сети через публичную DHT. Полная замена
+// registerLoop: ни одного обращения к сигналкам, ни одного нашего сервера.
+//
+// Что происходит за раунд: считаем инфохэш сети на текущие сутки, анонсируем на
+// нём свой внешний порт и забираем адреса тех, кто анонсировался тем же ключом.
+// Адреса отдаём движку голыми кандидатами (AddProbes) — он их пробивает, а пир из
+// них получается только когда придёт кадр, расшифрованный ключом сети.
+func (s *Session) dhtLoop(ns *netSession) {
+	s.mu.Lock()
+	d := s.dht
+	s.mu.Unlock()
+	if d == nil {
+		return
+	}
+
+	// Bootstrap — единственное место, где мы обращаемся к чужим «входным» узлам, и
+	// то лишь пока не набран кэш. Отменяемый: выход из сети не должен ждать обхода.
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-ns.stop
+		cancel()
+	}()
+	defer cancel()
+
+	if err := d.Bootstrap(ctx); err != nil {
+		log.Printf("сеть %s: DHT bootstrap: %v", tagShort(ns.tag), err)
+	}
+
+	for {
+		// Внешний адрес держим свежим сами: в этом режиме registerLoop, который
+		// обычно зовёт nodeEndpoints, не работает, а движку нужны наши кандидаты
+		// для госсипа, и нам — актуальный порт для анонса.
+		s.nodeEndpoints()
+
+		s.mu.Lock()
+		ext := s.selfEndpoint
+		eng := s.engine
+		s.mu.Unlock()
+
+		port := 0
+		if _, p, err := net.SplitHostPort(ext); err == nil {
+			if v, err := strconv.Atoi(p); err == nil {
+				port = v
+			}
+		}
+
+		found, err := d.Round(ctx, ns.key, port)
+		select {
+		case <-ns.stop:
+			return
+		default:
+		}
+
+		// Себя из выдачи убираем: свой же анонс вернётся нам первым, а долбить
+		// собственный внешний адрес — в лучшем случае впустую, в худшем эхо через
+		// NAT-петлю.
+		fresh := make([]string, 0, len(found))
+		for _, a := range found {
+			if a != ext {
+				fresh = append(fresh, a)
+			}
+		}
+		if eng != nil && len(fresh) > 0 {
+			eng.AddProbes(ns.tagB, fresh)
+		}
+
+		s.mu.Lock()
+		ns.dhtNodes = d.NumNodes()
+		ns.dhtFound = len(fresh)
+		ns.dhtRounds++
+		if err != nil {
+			ns.dhtErr = err.Error()
+		} else if ns.dhtNodes == 0 {
+			// Ноль узлов после честного обхода — почти наверняка DHT не пропускает
+			// провайдер или файрвол: сама по себе она за минуты набирает сотни.
+			ns.dhtErr = "DHT недоступна: ни одного узла (провайдер или файрвол режет?)"
+		} else {
+			ns.dhtErr = ""
+		}
+		s.mu.Unlock()
+
+		if err := d.SaveNodes(dhtSaveEvery); err != nil {
+			log.Printf("DHT: кэш узлов не сохранён: %v", err)
+		}
+
+		next := dhtRoundFast
+		if eng != nil && eng.SettledForPolling() && len(eng.PeerViews(ns.tagB)) > 0 {
+			next = dhtRoundSlow
+		}
+		select {
+		case <-ns.stop:
+			return
+		case <-ns.kick:
+			// Внешний адрес сменился — надо переанонсироваться с новым портом,
+			// иначе в DHT будет висеть мёртвая запись до её протухания.
+		case <-time.After(next):
+		}
+	}
+}
+
 // nodeEndpoints собирает наши текущие кандидаты (общие для узла): внешний адрес
 // первым (сигналка режет на 8-м), затем альтернативные внешние без дублей, потом
 // локальные. Обновляет s.selfEndpoint/extChurn (compare-and-set под mu дедуплицирует
@@ -931,6 +1227,12 @@ func (s *Session) logLoop(nodeStop <-chan struct{}) {
 		peerID := s.peerID
 		tags := make([]string, 0, len(s.nets))
 		for _, ns := range s.nets {
+			// Сети в режиме DHT сознательно НЕ отправляют диагностику: смысл режима
+			// в том, что о такой сети сигнальные серверы не знают вообще, а тег в
+			// запросе выдал бы им и её существование, и доступ к её логам.
+			if usesDHT(ns.discovery) {
+				continue
+			}
 			tags = append(tags, ns.tag)
 		}
 		s.mu.Unlock()

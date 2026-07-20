@@ -24,8 +24,37 @@ const KeySize = chacha20poly1305.KeySize
 // сети под одним паролем — разные ключи. Argon2id с умеренными параметрами: KDF
 // считается один раз при старте, так что можно не экономить.
 func DeriveNetworkKey(networkName, password string) [KeySize]byte {
-	salt := []byte("lanmesh|v1|" + networkName)
-	raw := argon2.IDKey([]byte(password), salt, 3, 64*1024, 4, KeySize)
+	return deriveKey("lanmesh|v1|"+networkName, password)
+}
+
+// DeriveNetworkKeyMode — ключ сети с учётом способа обнаружения участников.
+//
+// Способ обнаружения (сигналки или публичная DHT) вшит В КЛЮЧ, а не оставлен
+// настройкой клиента. Причина: точка встречи у режимов разная, и участник, по
+// ошибке выбравший не тот режим, при общем ключе оказался бы в подвешенном
+// состоянии — вроде «та же сеть», а никого не видит и понять почему нельзя.
+// Разные ключи превращают это в честное «ты не в этой сети»: симптом тот же, что
+// у неверного пароля, и лечится так же — взять правильное приглашение.
+//
+// Режим сигналок считается ровно как раньше (та же соль) — существующие сети и
+// старые клиенты не затронуты. Соли не пересекаются: после "lanmesh|v1" у одного
+// варианта идёт '|', у другого '-', так что имя сети, каким бы оно ни было, не
+// может подделать чужую соль.
+func DeriveNetworkKeyMode(networkName, password, mode string) [KeySize]byte {
+	switch mode {
+	case "dht":
+		return deriveKey("lanmesh|v1-dht|"+networkName, password)
+	case "dht+relay":
+		// Разрешение на ретранслятор тоже часть режима: если у одного он разрешён,
+		// а у другого нет, пара за симметричным NAT молча не соединится, и понять
+		// причину будет нельзя. Разные ключи делают это разными сетями.
+		return deriveKey("lanmesh|v1-dhtr|"+networkName, password)
+	}
+	return DeriveNetworkKey(networkName, password)
+}
+
+func deriveKey(salt, password string) [KeySize]byte {
+	raw := argon2.IDKey([]byte(password), []byte(salt), 3, 64*1024, 4, KeySize)
 	var key [KeySize]byte
 	copy(key[:], raw)
 	return key

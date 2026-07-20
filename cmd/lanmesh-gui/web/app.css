@@ -313,6 +313,18 @@ button.iconbtn.on { background: var(--accent-soft); border-color: var(--accent-l
 .netitem.off { opacity: .5; }
 .netitem.off .pdot { background: var(--fg-dim); box-shadow: none; }
 
+/* значок сети, которая ищет участников через публичную DHT вместо сигналок */
+.dhtbadge {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .04em; flex: none;
+  padding: 2px 7px; border-radius: 999px; cursor: default;
+  background: rgba(255,255,255,.06); color: var(--fg-mut); border: 1px solid transparent;
+}
+.dhtbadge.up { color: var(--sig-on); border-color: color-mix(in srgb, var(--sig-on) 45%, transparent); }
+.dhtbadge.down { color: var(--ping-bad); border-color: color-mix(in srgb, var(--ping-bad) 45%, transparent); }
+
+/* переключатели режима сети — стили ниже, рядом с общим label.chk (иначе они
+   проигрывали бы ему по каскаду) */
+
 /* ---------- вертикальные строки-карточки участников (без аватарок) ---------- */
 .rows { padding: 2px 11px 11px; display: flex; flex-direction: column; gap: 5px; }
 .row {
@@ -521,7 +533,48 @@ input:disabled, textarea:disabled, button:disabled {
 .dmain label.chk, label.chk {
   display: flex; align-items: center; gap: 8px; margin: 0; font-size: 12.5px; color: var(--fg); cursor: pointer;
 }
-.chk input[type="checkbox"] { width: auto; margin: 0; accent-color: var(--accent); }
+/* Свой бокс вместо нативного: системный чекбокс рисуется белым квадратом поверх
+   тёмной панели и выбивается из оформления. Берём те же токены, что у карточек
+   и полей (--glass / --glass-border / --glass-hi), поэтому он остаётся в тон фону
+   при любой из тем — они как раз эти переменные и подменяют. Отмеченный —
+   акцентом темы, а не системным цветом. */
+.chk input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  flex: none; width: 15px; height: 15px; padding: 0; margin: 0; position: relative;
+  background: var(--glass); border: 1px solid var(--glass-border); border-radius: 5px;
+  box-shadow: inset 0 1px 0 var(--glass-hi); cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.chk input[type="checkbox"]:hover:not(:disabled) { background: var(--glass-hi); border-color: var(--accent-line); }
+.chk input[type="checkbox"]:checked { background: var(--accent-soft); border-color: var(--accent-line); }
+/* Галочка — две стороны рамки, повёрнутые на 45°: без картинок и шрифтов, а
+   значит и без риска, что символ не отрисуется. */
+.chk input[type="checkbox"]:checked::after {
+  content: ""; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px;
+  border: solid var(--accent); border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.chk input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
+
+/* Переключатели режима сети в форме добавления. База — общая чекбокс-строка
+   label.chk (в т.ч. сброс width:100%/padding, который глобальное правило input
+   навязывает текстовым полям: без него чекбокс растягивался на всю строку и
+   выдавливал подпись, оставляя одинокий белый квадрат). Здесь — только своё:
+   подпись в две строки (потому выравнивание по верху, а не по центру) и
+   приглушённый тон, чтобы опция не спорила с основными полями формы.
+   Идут ПОСЛЕ .chk намеренно: та же специфичность, побеждает последнее. */
+label.dhtopt {
+  align-items: flex-start; gap: 9px; margin: 9px 0 0;
+  font-size: 11.5px; line-height: 1.45; color: var(--fg-mut);
+}
+label.dhtopt + label.dhtopt { margin-top: 7px; }
+/* display:flex перебивает атрибут hidden — как у .add-body/.hint, гасим явно.
+   Без этого вторая галка висела всегда и выдавливала кнопку за край карточки. */
+label.dhtopt[hidden] { display: none; }
+/* 1px компенсирует разницу базовой линии текста и бокса чекбокса */
+label.dhtopt input[type="checkbox"] { margin-top: 1px; flex: none; }
+label.dhtopt b { color: var(--fg); font-weight: 600; }
+/* режим пришёл из приглашения — выбирать нечего */
+label.dhtopt.locked { opacity: .5; cursor: default; }
 
 button:disabled, .btn:disabled, .btn-primary:disabled, .btn-ghost:disabled,
 textarea:disabled, input:disabled { opacity: .5; cursor: not-allowed; }

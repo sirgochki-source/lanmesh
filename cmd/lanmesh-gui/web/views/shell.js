@@ -11,7 +11,8 @@ export function pickMode(width) { return width < 620 ? 'compact' : 'detailed'; }
 export function displayNets(state) {
   const active = new Map((state.networks || []).map(n => [n.tag, n]));
   const saved = state.savedNets || [];
-  const out = saved.map(s => active.get(s.tag) || { name: s.name, tag: s.tag, inactive: true, peers: [], signals: [] });
+  const out = saved.map(s => active.get(s.tag)
+    || { name: s.name, tag: s.tag, discovery: s.discovery, inactive: true, peers: [], signals: [] });
   const savedTags = new Set(saved.map(s => s.tag));
   for (const n of state.networks || []) if (!savedTags.has(n.tag)) out.push(n);
   return out;

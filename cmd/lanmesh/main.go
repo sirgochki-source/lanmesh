@@ -33,6 +33,10 @@ func main() {
 	iface := flag.String("iface", "lanmesh", "имя виртуального адаптера")
 	relay := flag.String("relay", defaults.RelayAddr,
 		"ретранслятор для пиров за симметричным NAT; пусто — только прямые соединения (подставь свой)")
+	useDHT := flag.Bool("dht", false,
+		"экспериментально: искать пиров через публичную DHT сети BitTorrent, не обращаясь ни к одному серверу")
+	dhtRelay := flag.Bool("dht-relay", false,
+		"вместе с -dht: разрешить сети ретранслятор как запасной путь (иначе непробиваемые пары не соединятся). Должно совпадать у всех участников — режим вшит в ключ сети")
 	printTag := flag.Bool("tag", false, "напечатать тег сети (нужен для GET /logs) и выйти")
 	sendLogs := flag.Bool("sendlogs", true, "слать диагностику на сигналку (читается по -tag через GET /logs)")
 	flag.Parse()
@@ -45,7 +49,14 @@ func main() {
 	// Тег — несекретный идентификатор сети на сигналке; по нему забирается
 	// диагностика. Считается локально из имени+пароля, в сеть тут ничего не идёт.
 	if *printTag {
-		fmt.Println(sig.NetworkTag(crypto.DeriveNetworkKey(*network, *password)))
+		mode := ""
+		if *useDHT {
+			mode = "dht"
+			if *dhtRelay {
+				mode = "dht+relay"
+			}
+		}
+		fmt.Println(sig.NetworkTag(crypto.DeriveNetworkKeyMode(*network, *password, mode)))
 		return
 	}
 
@@ -57,7 +68,16 @@ func main() {
 	sess := app.NewSession(splitList(*signalURLs), splitList(*stunServers), *iface)
 	sess.EnableLogUpload(buf, *sendLogs)
 	sess.UseRelay(*relay)
-	if err := sess.Start(*network, *password); err != nil {
+	mode := app.DiscoverySignal
+	if *useDHT {
+		mode = app.DiscoveryDHT
+		if *dhtRelay {
+			mode = app.DiscoveryDHTRelay
+		}
+		log.Printf("обнаружение через DHT: сигналки не используются (ретранслятор %s)",
+			map[bool]string{true: "разрешён", false: "запрещён"}[*dhtRelay])
+	}
+	if err := sess.AddNetworkMode(*network, *password, mode); err != nil {
 		log.Fatalf("lanmesh: %v", err)
 	}
 	// Имя сети НЕ логируем — лог уходит на сигналку, а имя ей знать не положено.

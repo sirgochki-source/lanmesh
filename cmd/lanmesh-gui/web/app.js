@@ -150,6 +150,44 @@ document.addEventListener('input', (e) => {
   const inv = parseInvite(e.target.value);
   if (inv.net != null) document.getElementById('f-net').value = inv.net;
   if (inv.pass != null) document.getElementById('f-pass').value = inv.pass;
+  applyInviteMode(inv);
+});
+
+// Режим обнаружения задаёт создатель сети, и он вшит в её ключ: приглашение
+// приносит его вместе с именем и паролем, а галку мы блокируем — выбрать «своё»
+// значило бы попасть в другую сеть и не понять почему. Пустое поле приглашения
+// возвращает галку в распоряжение пользователя (он создаёт новую сеть).
+export function applyInviteMode(inv, root = document) {
+  const pick = (id) => root.getElementById ? root.getElementById(id) : root.querySelector('#' + id);
+  const box = pick('f-dht'), rbox = pick('f-dht-relay');
+  if (!box) return;
+  const locked = !!(inv && inv.disc);
+  if (locked) {
+    box.checked = inv.disc === 'dht' || inv.disc === 'dht+relay';
+    if (rbox) rbox.checked = inv.disc === 'dht+relay';
+  }
+  for (const [el, opt] of [[box, box.closest('.dhtopt')], [rbox, rbox && rbox.closest('.dhtopt')]]) {
+    if (!el) continue;
+    el.disabled = locked;
+    if (opt) opt.classList.toggle('locked', locked);
+  }
+  syncRelayOpt(root);
+}
+
+// Галка «разрешить ретранслятор» имеет смысл только у сети без серверов: у обычной
+// релей и так работает. Прячем её, пока не выбран режим DHT, — чтобы выбор не
+// выглядел как настройка, влияющая на обычные сети.
+export function syncRelayOpt(root = document) {
+  const pick = (id) => root.getElementById ? root.getElementById(id) : root.querySelector('#' + id);
+  const box = pick('f-dht'), rbox = pick('f-dht-relay');
+  if (!box || !rbox) return;
+  const opt = rbox.closest('.dhtopt');
+  if (opt) opt.hidden = !box.checked;
+  if (!box.checked) rbox.checked = false;
+}
+// Показ/скрытие галки релея при щелчке по «без серверов».
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'f-dht') syncRelayOpt();
 });
 // Действия (Task 13): добавление/выход из сети, приглашение, настройки серверов, диагностика.
 // Отдельный (третий) слушатель click — не трогаем существующие ветки expand/collapse/data-view выше.
@@ -178,7 +216,22 @@ document.addEventListener('click', async (e) => {
     const net = fNet || inv.net || '', pass = fPass || inv.pass || '';
     if (!net || !pass) { flashChip('Нужны имя сети и пароль'); return; }
     const body = { network: net, password: pass };
-    if ((inv.net || '').trim() === net) { if (inv.sigs.length) body.signals = inv.sigs; if (inv.relay !== null) body.relay = inv.relay; }
+    // Режим: из приглашения он главнее галок (вшит в ключ сети — выбрать другой
+    // значит войти в другую сеть). Галки работают, только когда сеть создаём мы.
+    const mode = inv.disc
+      || (document.getElementById('f-dht')?.checked
+        ? (document.getElementById('f-dht-relay')?.checked ? 'dht+relay' : 'dht')
+        : 'signal');
+    const sameNet = (inv.net || '').trim() === net;
+    if (mode === 'dht' || mode === 'dht+relay') {
+      body.dht = true;
+      // Сигналок у такой сети нет вовсе. Ретранслятор — только если он ей разрешён,
+      // и тогда обязательно ТОТ ЖЕ, что у пригласившего.
+      if (mode === 'dht+relay') { body.dhtRelay = true; if (sameNet && inv.relay !== null) body.relay = inv.relay; }
+    } else if (sameNet) {
+      if (inv.sigs.length) body.signals = inv.sigs;
+      if (inv.relay !== null) body.relay = inv.relay;
+    }
     const r = await postJSON('/api/addnetwork', body); const j = await r.json();
     if (!r.ok) { flashChip('Ошибка: ' + (j.error || r.status)); }
     else { activeView = 'list'; refreshView(); }  // после добавления — назад к списку с новой сетью
@@ -261,7 +314,22 @@ document.addEventListener('change', async (e) => {
   if (e.target.closest('[data-act]')?.dataset.act === 'sendlogs') await postJSON('/api/sendlogs', { enabled: e.target.checked });
 });
 // Отзывчивость: если пользователь не выбирал режим руками — следуем ширине окна.
-new ResizeObserver(() => { if (!manual) setMode(pickMode(innerWidth)); render(lastState); }).observe(document.documentElement);
+//
+// Перерисовку #view делаем ТОЛЬКО при реальной смене режима. Раньше здесь стоял
+// безусловный render(lastState) — то есть в обход защиты по фокусу, — и это ломало
+// форму добавления сети: её раскрытие меняет высоту документа, ResizeObserver
+// срабатывает и тут же переписывает #view свежей разметкой, где форма снова
+// свёрнута. Открытие формы само же её и закрывало, причём тем вернее, чем выше
+// форма. Смена режима — единственный случай, когда разметку действительно надо
+// пересобрать; при простом изменении размеров хватает CSS.
+let lastRenderedMode = mode;
+new ResizeObserver(() => {
+  if (!manual) setMode(pickMode(innerWidth));
+  if (mode !== lastRenderedMode) {
+    lastRenderedMode = mode;
+    render(lastState);
+  }
+}).observe(document.documentElement);
 
 // Перетаскивание окна за свою полосу-заголовок (только нативное приложение, где есть
 // мост window.lmDrag). mousedown по .hd, кроме кликов по кнопкам/интерактивным

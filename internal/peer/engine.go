@@ -72,6 +72,25 @@ const (
 	stunProbeTimeout = 5 * time.Second // ждём ответ; позже — чистим повисший txID
 )
 
+// Обнаружение без сигналки: голые адреса (DHT отдаёт IP:port без PeerID) и пиры,
+// узнанные из входящего кадра.
+const (
+	// probeTTL — сколько долбим голый адрес-кандидат, прежде чем забыть. DHT-запись
+	// живёт около двух часов, но протухший адрес долбить смысла нет: источник
+	// подсыпает свежие каждый раунд поиска.
+	probeTTL  = 5 * time.Minute
+	maxProbes = 64 // потолок голых адресов на сеть: в DHT кто угодно может анонсировать мусор
+
+	// maxLearnedPeers — потолок пиров, созданных из входящего трафика (а не из
+	// ответа сигналки). Подделать кадр без ключа сети нельзя, так что это защита не
+	// от чужого, а от разрастания таблицы на повторах и от участника-вредителя.
+	maxLearnedPeers = 64
+	// learnedExpire — узнанного из трафика пира забываем, если он столько молчит.
+	// Сигналка про него ничего не знает (в DHT-режиме её нет вовсе), поэтому чистит
+	// его только maintenance.
+	learnedExpire = 10 * time.Minute
+)
+
 // Типы пакетов ретранслятора (см. cmd/lanmesh-relay).
 const (
 	relayBind    byte = 0x01
@@ -94,6 +113,17 @@ type network struct {
 	peers  map[proto.PeerID]*peerState
 	byIP   map[netip.Addr]*peerState
 
+	// useRelay — можно ли этой сети пользоваться ретранслятором. Адрес релея общий
+	// на узел, но разрешение — у каждой сети своё: сеть в режиме «без серверов»
+	// не должна даже представляться ретранслятору (он увидел бы её тег), а для
+	// обычных сетей это по-прежнему запасной путь при неудачном пробитии.
+	useRelay bool
+
+	// probes — голые адреса-кандидаты без PeerID (от DHT-обнаружения). Долбим их
+	// пробитием: у кого есть ключ сети, тот ответит, и пир создастся из его кадра
+	// (см. learnPeerLocked). Ключ — addr.String(), значение — когда добавлен.
+	probes map[string]probeAddr
+
 	// sendCtr — исходящий счётчик кадров (anti-replay), общий для всех получателей в
 	// этой сети (мы — единственный отправитель со своим PeerID). Засеян временем
 	// старта, а не нулём: после перезапуска узла счётчик стартует ЗАВЕДОМО выше, чем
@@ -102,10 +132,19 @@ type network struct {
 	sendCtr atomic.Uint64
 }
 
+// probeAddr — голый адрес-кандидат и момент, когда мы о нём узнали.
+type probeAddr struct {
+	addr  *net.UDPAddr
+	added time.Time
+}
+
 type peerState struct {
 	net       *network // сеть, которой принадлежит пир (её ключом шифруем трафик к нему)
 	id        proto.PeerID
 	name      string
+	// learned — пир создан из входящего кадра, а не из ответа сигналки. Такого
+	// сигналка не «ведёт»: чистит его по молчанию maintenance (learnedExpire).
+	learned bool
 	virtualIP netip.Addr
 	endpoints []*net.UDPAddr // кандидаты (STUN + локальные)
 	active    *net.UDPAddr   // подтверждён по входящему пакету — ТОЛЬКО прямой путь
@@ -151,6 +190,10 @@ type Engine struct {
 	tun    TUN
 	selfID proto.PeerID
 	selfIP netip.Addr
+
+	// selfName — наше отображаемое имя, которое рассылаем пирам в FrameHello.
+	// Под mu, потому что пользователь может переименовать узел на ходу.
+	selfName string
 
 	// Ретранслятор общий (адрес один); тег у каждой сети свой, см. network.
 	relay *net.UDPAddr
@@ -201,11 +244,13 @@ func (e *Engine) AddNetwork(tag [relayTagLen]byte, sealer *crypto.Sealer, name s
 		return
 	}
 	nw := &network{
-		tag:    tag,
-		sealer: sealer,
-		name:   name,
-		peers:  make(map[proto.PeerID]*peerState),
-		byIP:   make(map[netip.Addr]*peerState),
+		tag:      tag,
+		sealer:   sealer,
+		name:     name,
+		useRelay: true, // по умолчанию как раньше; сеть без серверов снимает это флагом
+		peers:    make(map[proto.PeerID]*peerState),
+		byIP:     make(map[netip.Addr]*peerState),
+		probes:   make(map[string]probeAddr),
 	}
 	nw.sendCtr.Store(uint64(time.Now().UnixNano())) // засев выше прошлой сессии
 	e.nets[tag] = nw
@@ -221,6 +266,72 @@ func (e *Engine) RemoveNetwork(tag [relayTagLen]byte) {
 // netByTag — сеть по тегу (nil, если такой нет). Вызывать под локом.
 func (e *Engine) netByTag(tag [relayTagLen]byte) *network {
 	return e.nets[tag]
+}
+
+// SetSelfName задаёт наше отображаемое имя для рассылки пирам (FrameHello).
+// Пустое имя не шлём — пир оставит нас безымянным и покажет по виртуальному IP.
+func (e *Engine) SetSelfName(name string) {
+	if len(name) > proto.HelloMaxLen {
+		name = name[:proto.HelloMaxLen]
+	}
+	e.mu.Lock()
+	e.selfName = name
+	e.mu.Unlock()
+}
+
+// SetNetworkRelay разрешает или запрещает сети пользоваться ретранслятором.
+// Запрет полный: ни bind (значит, релей не узнает даже тега сети), ни отправка
+// через него, ни приём. Вызывать сразу после AddNetwork.
+func (e *Engine) SetNetworkRelay(tag [relayTagLen]byte, allowed bool) {
+	e.mu.Lock()
+	if n := e.nets[tag]; n != nil {
+		n.useRelay = allowed
+	}
+	e.mu.Unlock()
+}
+
+// AddProbes добавляет в сеть голые адреса-кандидаты (IP:port без PeerID) — их
+// отдаёт обнаружение через DHT, где записи несут только адрес. Движок будет
+// долбить их пробитием; ответит только тот, у кого есть ключ сети, и уже из его
+// кадра появится настоящий пир (learnPeerLocked). Дубли и мусор безвредны:
+// незашифрованный нашим ключом ответ никого не создаёт.
+//
+// Список сознательно НЕ идёт в endpoints пиров: там потолок maxCandidates=12, и
+// мусор из публичной DHT вытеснил бы рабочие адреса от сигналки/госсипа.
+func (e *Engine) AddProbes(tag [relayTagLen]byte, addrs []string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	n := e.nets[tag]
+	if n == nil {
+		return
+	}
+	now := time.Now()
+	for _, s := range addrs {
+		a, err := net.ResolveUDPAddr("udp4", s)
+		if err != nil || a.IP == nil || a.Port == 0 {
+			continue
+		}
+		k := a.String()
+		if _, ok := n.probes[k]; ok {
+			n.probes[k] = probeAddr{addr: a, added: now} // освежаем TTL
+			continue
+		}
+		if len(n.probes) >= maxProbes {
+			continue
+		}
+		n.probes[k] = probeAddr{addr: a, added: now}
+	}
+}
+
+// ProbeCount — сколько голых адресов сейчас в работе (для панели/диагностики).
+func (e *Engine) ProbeCount(tag [relayTagLen]byte) int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	n := e.nets[tag]
+	if n == nil {
+		return 0
+	}
+	return len(n.probes)
 }
 
 // UseRelay задаёт адрес ретранслятора — общий на все сети (он ведёт таблицу по
@@ -460,6 +571,16 @@ func (e *Engine) SyncPeers(tag [relayTagLen]byte, list []proto.PeerInfo) {
 		if seen[id] {
 			continue
 		}
+		if ps.learned {
+			continue // не из сигналки и не ей его сносить, см. learnedExpire
+		}
+		// Живой трафик весомее мнения сигналки. Без этой проверки достаточно было
+		// одному участнику перестать регистрироваться (перешёл в режим без
+		// сигналки, ушёл в оффлайн-режим обнаружения) — и остальные сносили ему
+		// РАБОЧЕЕ соединение через 90с, хотя пакеты от него шли всё это время.
+		if now.Sub(ps.lastHeard()) < peerForget {
+			continue
+		}
 		if ps.absentSince.IsZero() {
 			ps.absentSince = now
 			continue // первая осечка — ждём, вдруг сигналка просто моргнула
@@ -591,6 +712,17 @@ func (e *Engine) netToTun() error {
 		if nw == nil {
 			continue // ничей ключ / мусор / обрезка — молча дропаем
 		}
+		if viaRelay {
+			// Сети, которой релей запрещён, через него ничего не приходит и приходить
+			// не должно (мы там не биндимся). Кадр в такой обёртке — либо остаток
+			// прошлой сессии, либо чужая игра: дропаем, чтобы запрет был полным.
+			e.mu.RLock()
+			allowed := nw.useRelay
+			e.mu.RUnlock()
+			if !allowed {
+				continue
+			}
+		}
 
 		var senderID proto.PeerID
 		copy(senderID[:], plain[1:frameCounterOff])
@@ -600,25 +732,53 @@ func (e *Engine) netToTun() error {
 
 		e.mu.Lock()
 		ps := nw.peers[senderID]
-		if ps != nil && !ps.acceptCounter(counter) {
+		learnedNow := false
+		if ps == nil {
+			// Пира нет в таблице — но кадр РАСШИФРОВАЛСЯ ключом сети, а это
+			// криптографическое доказательство членства (ключ = KDF(имя+пароль)).
+			// Раньше такой кадр дропался «сигналка ещё не отдала» — и это делало
+			// сигналку обязательной: узнать пира было больше неоткуда. Теперь
+			// узнаём его прямо отсюда, и обнаружение (DHT, кэш, инвайт с адресом)
+			// может обойтись вообще без сервера. Виртуальный IP считаем сами из
+			// PeerID, поэтому подменить чужой адрес отправитель не может.
+			ps = e.learnPeerLocked(nw, senderID)
+			learnedNow = ps != nil
+		}
+		if ps == nil {
+			e.mu.Unlock()
+			continue // свои же кадры / потолок узнанных пиров
+		}
+		if !ps.acceptCounter(counter) {
 			e.mu.Unlock()
 			continue // повтор/устаревший кадр (anti-replay) — молча дропаем
 		}
-		if ps != nil {
-			if viaRelay {
-				// Через ретранслятор: пир жив, но прямая дырка НЕ пробита.
-				// Записать src в active было бы ошибкой — это адрес relay, и мы
-				// бы решили, что пробились, перестав долбить кандидаты.
-				ps.lastRelayRecv = time.Now()
-			} else {
-				// Прямой валидный пакет — вот он, итог пробития NAT.
-				ps.active = src
-				ps.lastRecv = time.Now()
-			}
+		if viaRelay {
+			// Через ретранслятор: пир жив, но прямая дырка НЕ пробита.
+			// Записать src в active было бы ошибкой — это адрес relay, и мы
+			// бы решили, что пробились, перестав долбить кандидаты.
+			ps.lastRelayRecv = time.Now()
+		} else {
+			// Прямой валидный пакет — вот он, итог пробития NAT.
+			ps.active = src
+			ps.lastRecv = time.Now()
+			// Адрес, с которого пир до нас достучался, — рабочий кандидат: держим
+			// его в списке, чтобы после молчания было куда перепробиваться.
+			mergeCandidates(ps, []string{src.String()})
+			delete(nw.probes, src.String()) // голый адрес отработал, стал пиром
 		}
+		selfName := e.selfName
 		e.mu.Unlock()
-		if ps == nil {
-			continue // пир не из таблицы (сигналка ещё не отдала) — игнор
+
+		if learnedNow {
+			// Только что познакомились: представляемся, иначе в панели у обоих
+			// будет безымянный пир (имена раздавала сигналка, а её может не быть).
+			if selfName != "" {
+				if viaRelay {
+					e.writeFrameRelay(nw, ps.id, proto.FrameHello, []byte(selfName))
+				} else {
+					e.writeFrame(nw, src, proto.FrameHello, []byte(selfName))
+				}
+			}
 		}
 
 		switch typ {
@@ -653,8 +813,45 @@ func (e *Engine) netToTun() error {
 				reflex = ""
 			}
 			e.handleAddr(ps, reflex, cands)
+		case proto.FrameHello:
+			// Пир назвал себя. Режем длину на приёме и не даём пустым именем
+			// стереть уже известное (от сигналки оно приходит вместе с пиром).
+			name := string(payload)
+			if len(name) > proto.HelloMaxLen {
+				name = name[:proto.HelloMaxLen]
+			}
+			if name != "" {
+				e.mu.Lock()
+				ps.name = name
+				e.mu.Unlock()
+			}
 		}
 	}
+}
+
+// learnPeerLocked заводит пира, узнанного из входящего кадра (а не от сигналки).
+// Возвращает nil, если это мы сами или упёрлись в потолок. Вызывать под e.mu.Lock.
+//
+// Имя оставляем пустым: его сообщит сам пир в FrameHello. VirtualIP считаем из
+// PeerID — он и только он определяет адрес в виртуальной сети.
+func (e *Engine) learnPeerLocked(n *network, id proto.PeerID) *peerState {
+	if id == e.selfID {
+		return nil // свой же кадр вернулся (например, петля через relay) — не пир
+	}
+	learned := 0
+	for _, p := range n.peers {
+		if p.learned {
+			learned++
+		}
+	}
+	if learned >= maxLearnedPeers {
+		return nil
+	}
+	vip := proto.VirtualIP(id)
+	ps := &peerState{net: n, id: id, virtualIP: vip, firstSeen: time.Now(), learned: true}
+	n.peers[id] = ps
+	n.byIP[vip] = ps
+	return ps
 }
 
 // notePong принимает ответ на наш ping и считает RTT. Ответ на устаревший номер
@@ -717,12 +914,35 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 		hasStun := len(e.stunServers) > 0
 		degraded := false // хоть один пир не на свежем прямом пути → чаще переспрашиваем свой адрес
 		cands := append([]string(nil), e.selfCands...)
+		selfName := e.selfName
 		netsList := make([]*network, 0, len(e.nets))
 		for _, nw := range e.nets {
-			netsList = append(netsList, nw)
-			for _, ps := range nw.peers {
+			// Разрешение на релей — у каждой сети своё, поэтому и список для bind, и
+			// признак «есть запасной путь» считаем по сети, а не по узлу.
+			nwRelay := hasRelay && nw.useRelay
+			if nwRelay {
+				netsList = append(netsList, nw)
+			}
+			// Голые адреса от обнаружения (DHT): долбим их так же, как кандидатов
+			// пира. Ответит только тот, у кого есть ключ сети, — и станет пиром.
+			for k, pr := range nw.probes {
+				if now.Sub(pr.added) >= probeTTL {
+					delete(nw.probes, k)
+					continue
+				}
+				punches = append(punches, punchJob{n: nw, dst: pr.addr})
+			}
+			for id, ps := range nw.peers {
+				// Пира, узнанного из трафика, никто не «ведёт»: сигналка про него не
+				// знает, а в DHT-режиме её и нет. Замолчал надолго — забываем сами,
+				// иначе таблица растёт от каждого случайного контакта.
+				if ps.learned && now.Sub(ps.lastHeard()) >= learnedExpire {
+					delete(nw.peers, id)
+					delete(nw.byIP, ps.virtualIP)
+					continue
+				}
 				confirmed := ps.active != nil && now.Sub(ps.lastRecv) < peerTimeout
-				relayPath := !confirmed && hasRelay && ps.usableRelay(now)
+				relayPath := !confirmed && nwRelay && ps.usableRelay(now)
 				// suspect — подтверждённый пир, но давно не слышно: возможно, у него
 				// сменился адрес. Начинаем пробивать кандидаты заново, не дожидаясь
 				// peerTimeout, — иначе без ретранслятора это минута отвала.
@@ -777,7 +997,9 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 
 		if hasRelay && now.Sub(lastBind) >= relayBindTick {
 			lastBind = now
-			for _, nw := range netsList { // напоминаем о себе релею в каждой сети (свой тег)
+			// netsList содержит только сети, которым релей разрешён: остальные не
+			// должны светить ему даже свой тег.
+			for _, nw := range netsList {
 				e.sendRelayBind(nw)
 			}
 		}
@@ -812,6 +1034,15 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 					e.writeFrame(g.n, g.dst, proto.FrameAddr, payload)
 				} else {
 					e.writeFrameRelay(g.n, g.id, proto.FrameAddr, payload)
+				}
+				// Имя шлём тем же тактом: пир, узнанный без сигналки, иначе так и
+				// останется безымянным, а переименование узла не доедет никогда.
+				if selfName != "" {
+					if g.dst != nil {
+						e.writeFrame(g.n, g.dst, proto.FrameHello, []byte(selfName))
+					} else {
+						e.writeFrameRelay(g.n, g.id, proto.FrameHello, []byte(selfName))
+					}
 				}
 			}
 		}
@@ -904,9 +1135,9 @@ func (e *Engine) sendFrame(ps *peerState, typ byte, payload []byte) {
 	e.mu.RLock()
 	now := time.Now()
 	dst := ps.directAddr(now)
-	relayOK := e.relay != nil && ps.usableRelay(now)
-	id := ps.id
 	n := ps.net
+	relayOK := e.relay != nil && n.useRelay && ps.usableRelay(now)
+	id := ps.id
 	e.mu.RUnlock()
 
 	switch {
@@ -940,7 +1171,7 @@ func (e *Engine) sendToAll(typ byte, payload []byte) {
 			switch {
 			case ps.directAddr(now) != nil:
 				jobs = append(jobs, job{n: nw, direct: ps.active, ps: ps})
-			case e.relay != nil && ps.usableRelay(now):
+			case e.relay != nil && nw.useRelay && ps.usableRelay(now):
 				jobs = append(jobs, job{n: nw, id: ps.id, ps: ps})
 			}
 		}
@@ -972,6 +1203,19 @@ func (ps *peerState) directAddr(now time.Time) *net.UDPAddr {
 		return ps.active
 	}
 	return nil
+}
+
+// lastHeard — когда пир в последний раз подал признаки жизни любым путём; если
+// не подавал вовсе, отсчитываем от знакомства. Вызывать под локом.
+func (ps *peerState) lastHeard() time.Time {
+	last := ps.lastRecv
+	if ps.lastRelayRecv.After(last) {
+		last = ps.lastRelayRecv
+	}
+	if last.IsZero() {
+		return ps.firstSeen
+	}
+	return last
 }
 
 // usableRelay — стоит ли слать пиру через ретранслятор. Вызывать под локом.
