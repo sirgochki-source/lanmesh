@@ -37,6 +37,14 @@ type Cache struct {
 	mu      sync.Mutex
 	entries map[string][]entry
 	dirty   bool
+
+	// saveMu сериализует ФАЙЛОВУЮ часть Save (MkdirAll+WriteFile+Rename) отдельно
+	// от mu: mu защищает только карту entries, а два Save подряд (cacheSaveLoop по
+	// таймеру и финальный Save из tearDownNode) могут пойти писать один и тот же
+	// path+".tmp" почти одновременно — close(nodeStop) не ждёт, пока предыдущий
+	// Save дописал файл. Без этого мьютекса гонка могла бы оставить на диске
+	// испорченный (частично переписанный) endpoints.json.
+	saveMu sync.Mutex
 }
 
 // Open читает кэш. Ошибки чтения не возвращаются: битый или отсутствующий файл —
@@ -80,7 +88,12 @@ func (c *Cache) Put(tag, id, addr string) {
 	list := c.entries[k]
 	for i, e := range list {
 		if e.Addr == addr {
-			list[i].Seen = time.Now()
+			// Переставляем в начало, а не просто обновляем Seen на месте: Get
+			// обещает "свежие первыми", и без переноса повторно подтверждённый
+			// (но не новый) адрес мог бы застрять в хвосте списка.
+			e.Seen = time.Now()
+			list = append(list[:i:i], list[i+1:]...)
+			list = append([]entry{e}, list...)
 			c.entries[k], c.dirty = list, true
 			return
 		}
@@ -112,7 +125,15 @@ func (c *Cache) Peers(tag string) []string {
 // Save пишет кэш атомарно (temp + rename). Зовётся по таймеру и при выходе, а не
 // на каждый пакет: файл не должен стать источником дисковой нагрузки под
 // игровым трафиком.
+//
+// path=="" (UserConfigDir() недоступен, см. netcachePath) — Save намеренно
+// no-op: иначе WriteFile писал бы ".tmp" в текущий каталог, а Rename(".tmp", "")
+// падал бы каждую минуту.
 func (c *Cache) Save() error {
+	if c.path == "" {
+		return nil
+	}
+
 	c.mu.Lock()
 	if !c.dirty {
 		c.mu.Unlock()
@@ -131,12 +152,20 @@ func (c *Cache) Save() error {
 			live[k] = keep
 		}
 	}
-	data, err := json.Marshal(live)
-	c.dirty = false
 	c.mu.Unlock()
+
+	// Marshal — уже без c.mu: колбэк OnDirectConfirmed (см. session.go) на каждый
+	// подтверждённый пакет зовёт c.Put, а сам колбэк выполняется под e.mu
+	// движка — мьютексом всего цикла чтения пакетов. Держать c.mu на время
+	// Marshal значило бы держать и e.mu, то есть тормозить приём трафика ради
+	// записи кэша на диск.
+	data, err := json.Marshal(live)
 	if err != nil {
 		return err
 	}
+
+	c.saveMu.Lock()
+	defer c.saveMu.Unlock()
 	if err := os.MkdirAll(filepath.Dir(c.path), 0700); err != nil {
 		return err
 	}
@@ -144,5 +173,15 @@ func (c *Cache) Save() error {
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, c.path)
+	if err := os.Rename(tmp, c.path); err != nil {
+		return err
+	}
+
+	// dirty сбрасываем ТОЛЬКО после успешного Rename: если запись провалилась
+	// (диск полон, антивирус держит файл), изменения обязаны остаться "грязными",
+	// иначе следующий тик тихо ничего не сохранит.
+	c.mu.Lock()
+	c.dirty = false
+	c.mu.Unlock()
+	return nil
 }

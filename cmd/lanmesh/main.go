@@ -30,6 +30,10 @@ func main() {
 		"сигналки через запятую — регистрируемся во всех и сливаем списки участников (подставь свои)")
 	stunServers := flag.String("stun", strings.Join(sig.DefaultSTUNServers, ","),
 		"STUN-серверы через запятую (опрашиваются разом, берётся первый ответивший)")
+	port := flag.Int("port", 0,
+		"постоянный локальный UDP-порт узла (0 — как раньше, случайный при каждом запуске). "+
+			"Задай явно и не меняй между запусками: проброс порта на роутере не будет пересоздаваться, "+
+			"а кэш подтверждённых endpoint'ов друзей (см. internal/netcache) не потеряет смысл из-за смены порта")
 	iface := flag.String("iface", "lanmesh", "имя виртуального адаптера")
 	relay := flag.String("relay", defaults.RelayAddr,
 		"ретранслятор для пиров за симметричным NAT; пусто — только прямые соединения (подставь свой)")
@@ -68,6 +72,11 @@ func main() {
 	sess := app.NewSession(splitList(*signalURLs), splitList(*stunServers), *iface)
 	sess.EnableLogUpload(buf, *sendLogs)
 	sess.UseRelay(*relay)
+	// У CLI нет конфига, куда GUI сохраняет выбранный порт (см. cmd/lanmesh-gui) —
+	// колбэк сохранения передавать некуда, поэтому nil. -port=0 (по умолчанию)
+	// ведёт себя как раньше: PickPort сам выберет случайный порт при каждом
+	// запуске и ничего сохранять не попросит.
+	sess.SetPort(*port, nil)
 	mode := app.DiscoverySignal
 	if *useDHT {
 		mode = app.DiscoveryDHT

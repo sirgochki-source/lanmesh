@@ -422,11 +422,9 @@ func (s *Session) AddNetworkMode(network, password, discovery string) error {
 	// момент мы его ещё даже не спросили. PeerID на этом шаге неоткуда взять,
 	// кроме собственного кэша прошлых сессий (сигналка не отвечала, а DHT отдаёт
 	// голые адреса без id) — отсюда Cache.Peers.
-	if s.cache != nil {
-		for _, id := range s.cache.Peers(tag) {
-			if addrs := s.cache.Get(tag, id); len(addrs) > 0 {
-				s.engine.AddProbes(tagB, addrs)
-			}
+	for _, id := range s.cache.Peers(tag) {
+		if addrs := s.cache.Get(tag, id); len(addrs) > 0 {
+			s.engine.AddProbes(tagB, addrs)
 		}
 	}
 
@@ -652,6 +650,19 @@ func (s *Session) bringUpNode() error {
 	s.mu.Unlock()
 	port, savePort := PickPort(savedPort)
 	conn, err := listenNode(port)
+	if err != nil && errors.Is(err, windows.WSAEADDRINUSE) {
+		// TOCTOU между PickPort и этим вызовом: PickPort проверяет свободность
+		// пробным bind'ом и сразу закрывает сокет, а listenNode биндит заново —
+		// в этом окне порт мог перехватить кто-то другой (например, второй
+		// экземпляр lanmesh, стартующий в ту же секунду). До постоянного порта
+		// (см. PickPort) listenNode(0) практически не мог вернуть эту ошибку —
+		// теперь может, и без перевыбора узел падал бы там, где раньше просто
+		// брал другой порт. Перевыбираем один раз и пробуем снова: PickPort сам
+		// заново проверит portFree и обойдёт порт, который уже занят.
+		log.Printf("порт %d перехвачен между проверкой и bind — перевыбираем", port)
+		port, savePort = PickPort(savedPort)
+		conn, err = listenNode(port)
+	}
 	if err != nil {
 		return fmt.Errorf("udp listen: %w", err)
 	}
@@ -685,16 +696,14 @@ func (s *Session) bringUpNode() error {
 	// Имя узла движку: пирам, узнанным без сигналки (DHT), его больше неоткуда
 	// взять — они получат его кадром FrameHello.
 	engine.SetSelfName(s.nodeName())
-	if s.cache != nil {
-		// Только ПОДТВЕРЖДЁННЫЙ прямой адрес (движок зовёт колбэк лишь когда пир
-		// реально ответил расшифрованным кадром) — кандидатов в кэш класть нельзя,
-		// иначе он накопит мусор из DHT и будет воспроизводить его при каждом
-		// старте. Put дешёвый (память, без диска) — колбэк в горячем пути чтения
-		// не блокирует.
-		engine.OnDirectConfirmed(func(tag [32]byte, id proto.PeerID, addr netip.AddrPort) {
-			s.cache.Put(hex.EncodeToString(tag[:]), id.String(), addr.String())
-		})
-	}
+	// Только ПОДТВЕРЖДЁННЫЙ прямой адрес (движок зовёт колбэк лишь когда пир
+	// реально ответил расшифрованным кадром) — кандидатов в кэш класть нельзя,
+	// иначе он накопит мусор из DHT и будет воспроизводить его при каждом
+	// старте. Put дешёвый (память, без диска) — колбэк в горячем пути чтения
+	// не блокирует.
+	engine.OnDirectConfirmed(func(tag [32]byte, id proto.PeerID, addr netip.AddrPort) {
+		s.cache.Put(hex.EncodeToString(tag[:]), id.String(), addr.String())
+	})
 
 	s.mu.Lock()
 	relayAddr := s.relayAddr
@@ -744,9 +753,7 @@ func (s *Session) bringUpNode() error {
 	}()
 	go s.reflexFanout(kick, nodeStop)
 	go s.logLoop(nodeStop)
-	if s.cache != nil {
-		go s.cacheSaveLoop(nodeStop)
-	}
+	go s.cacheSaveLoop(nodeStop)
 
 	log.Printf("узел поднят, виртуальный IP %s", selfIP)
 	return nil
@@ -788,16 +795,19 @@ func (s *Session) tearDownNode() {
 	s.peerID, s.selfEndpoint = "", ""
 	s.mu.Unlock()
 
-	// nodeStop закрываем ДО финального Save: останавливаем cacheSaveLoop первым,
-	// чтобы он не гонялся с этим сохранением за c.mu (не гонка на корректность —
-	// Save потокобезопасен — а просто чтобы порядок был предсказуемым).
+	// nodeStop закрываем ДО финального Save, чтобы cacheSaveLoop перестал будить
+	// свой тикер — но close() не ждёт саму горутину: если она в этот момент
+	// внутри Save(), финальный вызов ниже стартует ПАРАЛЛЕЛЬНО с ней, а не после.
+	// Файловая часть Save (WriteFile+Rename) намеренно идёт вне c.mu (см.
+	// netcache.go), поэтому без отдельного мьютекса записи два одновременных
+	// Save писали бы один и тот же path+".tmp" — Save сериализует эту часть сам
+	// (saveMu), так что параллельный вызов отсюда безопасен; порядок с close()
+	// оставлен просто для предсказуемости, а не ради корректности.
 	if nodeStop != nil {
 		close(nodeStop)
 	}
-	if s.cache != nil {
-		if err := s.cache.Save(); err != nil {
-			log.Printf("кэш endpoint'ов: сохранение при выходе не удалось: %v", err)
-		}
+	if err := s.cache.Save(); err != nil {
+		log.Printf("кэш endpoint'ов: сохранение при выходе не удалось: %v", err)
 	}
 	if dev != nil {
 		dev.Close()
