@@ -89,7 +89,27 @@ const (
 	// Сигналка про него ничего не знает (в DHT-режиме её нет вовсе), поэтому чистит
 	// его только maintenance.
 	learnedExpire = 10 * time.Minute
+
+	// probeBackoffBase/Max — экспоненциальный backoff пробития голого адреса из DHT.
+	// Первые попытки часто (быстро сводим настоящего пира), дальше реже (мусорный
+	// адрес не долбим впустую всё его время жизни). Сравни: подтверждённый пир
+	// пингуется по фиксированному pingInterval — там адрес доверенный.
+	probeBackoffBase = 2 * time.Second
+	probeBackoffMax  = 30 * time.Second
 )
+
+// probeBackoff — пауза перед следующим пробитием голого адреса по числу уже
+// сделанных попыток: base, 2×base, 4×base … но не больше probeBackoffMax.
+func probeBackoff(tries int) time.Duration {
+	d := probeBackoffBase
+	for i := 0; i < tries && d < probeBackoffMax; i++ {
+		d *= 2
+	}
+	if d > probeBackoffMax {
+		d = probeBackoffMax
+	}
+	return d
+}
 
 // Типы пакетов ретранслятора (см. cmd/lanmesh-relay).
 const (
@@ -134,8 +154,10 @@ type network struct {
 
 // probeAddr — голый адрес-кандидат и момент, когда мы о нём узнали.
 type probeAddr struct {
-	addr  *net.UDPAddr
-	added time.Time
+	addr     *net.UDPAddr
+	added    time.Time // момент ПЕРВОГО обнаружения — от него абсолютный probeTTL
+	tries    int       // сколько раз уже долбили (для экспоненциального backoff)
+	lastPoke time.Time // когда долбили в последний раз
 }
 
 type peerState struct {
@@ -233,21 +255,34 @@ func NewEngine(conn *net.UDPConn, tun TUN, selfID proto.PeerID, selfIP netip.Add
 	}
 }
 
-// AddNetwork подключает сеть (ключ+тег+имя) на ходу. Идемпотентно: повторный вызов
-// с тем же тегом обновляет ключ/имя, таблицу пиров сохраняет. Потокобезопасно.
+// AddNetwork подключает сеть с разрешённым ретранслятором (обычный случай). Тонкая
+// обёртка над AddNetworkRelay для совместимости и краткости в тестах/CLI.
 func (e *Engine) AddNetwork(tag [relayTagLen]byte, sealer *crypto.Sealer, name string) {
+	e.AddNetworkRelay(tag, sealer, name, true)
+}
+
+// AddNetworkRelay подключает сеть (ключ+тег+имя) на ходу, СРАЗУ задавая разрешение
+// на ретранслятор. Идемпотентно: повторный вызов с тем же тегом обновляет
+// ключ/имя/флаг, таблицу пиров сохраняет. Потокобезопасно.
+//
+// Флаг задаётся здесь, под тем же локом, что и создание сети, — а не отдельным
+// SetNetworkRelay следом: иначе между двумя вызовами оставалось окно, в котором тик
+// maintenance мог увидеть сеть без серверов как разрешающую релей и представить её
+// ретранслятору (тот узнал бы её тег).
+func (e *Engine) AddNetworkRelay(tag [relayTagLen]byte, sealer *crypto.Sealer, name string, allowRelay bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if n := e.nets[tag]; n != nil {
 		n.sealer = sealer
 		n.name = name
+		n.useRelay = allowRelay
 		return
 	}
 	nw := &network{
 		tag:      tag,
 		sealer:   sealer,
 		name:     name,
-		useRelay: true, // по умолчанию как раньше; сеть без серверов снимает это флагом
+		useRelay: allowRelay,
 		peers:    make(map[proto.PeerID]*peerState),
 		byIP:     make(map[netip.Addr]*peerState),
 		probes:   make(map[string]probeAddr),
@@ -313,7 +348,10 @@ func (e *Engine) AddProbes(tag [relayTagLen]byte, addrs []string) {
 		}
 		k := a.String()
 		if _, ok := n.probes[k]; ok {
-			n.probes[k] = probeAddr{addr: a, added: now} // освежаем TTL
+			// Уже знаем этот адрес — НЕ обновляем added и не сбрасываем backoff.
+			// Иначе probeTTL превращался бы в скользящее окно: адрес, который
+			// раз за разом возвращает публичная DHT (в т.ч. чужой мусор или
+			// подставленный адрес-жертва), долбился бы вечно.
 			continue
 		}
 		if len(n.probes) >= maxProbes {
@@ -556,6 +594,12 @@ func (e *Engine) SyncPeers(tag [relayTagLen]byte, list []proto.PeerInfo) {
 			ps = &peerState{net: n, id: id, firstSeen: now}
 			n.peers[id] = ps
 		}
+		// Пир подтверждён сигналкой — он больше НЕ «learned». Если он был впервые
+		// заведён из входящего трафика (learnPeerLocked, learned=true) до первого
+		// ответа сигналки, а теперь пришёл в её списке, оставить learned=true значило
+		// бы отдать его под чистку learnedExpire (10м молчания по трафику) вопреки
+		// тому, что сигналка его подтверждает, — то есть сносить рабочего пира.
+		ps.learned = false
 		ps.absentSince = time.Time{} // снова в списке
 		ps.name = info.Name
 		ps.virtualIP = vip
@@ -923,13 +967,23 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 			if nwRelay {
 				netsList = append(netsList, nw)
 			}
-			// Голые адреса от обнаружения (DHT): долбим их так же, как кандидатов
-			// пира. Ответит только тот, у кого есть ключ сети, — и станет пиром.
+			// Голые адреса от обнаружения (DHT): долбим их пробитием. Ответит только
+			// тот, у кого есть ключ сети, — и станет пиром. Долбим с экспоненциальным
+			// backoff, а не каждый тик: адрес из ПУБЛИЧНОЙ DHT может быть мусором или
+			// подставленным чужим адресом-жертвой, и слать ему пакет раз в 2с всё
+			// время его жизни — это и лишний трафик, и превращение узла в инструмент
+			// рефлективного флуда, и паттерн, который провайдер читает как скан.
 			for k, pr := range nw.probes {
 				if now.Sub(pr.added) >= probeTTL {
 					delete(nw.probes, k)
 					continue
 				}
+				if !pr.lastPoke.IsZero() && now.Sub(pr.lastPoke) < probeBackoff(pr.tries) {
+					continue // ещё рано долбить этот адрес
+				}
+				pr.tries++
+				pr.lastPoke = now
+				nw.probes[k] = pr
 				punches = append(punches, punchJob{n: nw, dst: pr.addr})
 			}
 			for id, ps := range nw.peers {

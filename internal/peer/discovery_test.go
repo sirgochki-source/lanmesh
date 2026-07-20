@@ -230,3 +230,78 @@ func TestRelayForbiddenNetworkNeverBinds(t *testing.T) {
 		t.Fatal("сеть с разрешённым релеем к нему не привязалась — тест ничего не доказывает")
 	}
 }
+
+// probeTTL — абсолютный потолок: повторное появление адреса в раунде DHT НЕ
+// продлевает его жизнь. Иначе мусорный/подставленный адрес долбился бы вечно.
+func TestProbeTTLNotRefreshedOnReAdd(t *testing.T) {
+	sealer, err := crypto.NewSealer(crypto.DeriveNetworkKey("тест", "пароль"))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	a := newNode(t, sealer)
+	defer a.conn.Close()
+
+	a.eng.AddProbes(testTag, []string{"203.0.113.7:5000"})
+	a.eng.mu.Lock()
+	pr := a.eng.nets[testTag].probes["203.0.113.7:5000"]
+	first := pr.added
+	// Состарим запись почти до TTL, затем «переоткроем» тем же адресом.
+	pr.added = pr.added.Add(-probeTTL + time.Second)
+	a.eng.nets[testTag].probes["203.0.113.7:5000"] = pr
+	aged := pr.added
+	a.eng.mu.Unlock()
+
+	a.eng.AddProbes(testTag, []string{"203.0.113.7:5000"}) // повторное появление
+	a.eng.mu.Lock()
+	got := a.eng.nets[testTag].probes["203.0.113.7:5000"].added
+	a.eng.mu.Unlock()
+	if !got.Equal(aged) {
+		t.Fatalf("added обновился при повторе (%v != %v) — TTL стал скользящим", got, aged)
+	}
+	_ = first
+}
+
+// Backoff растёт с числом попыток и упирается в потолок.
+func TestProbeBackoffGrows(t *testing.T) {
+	if probeBackoff(0) != probeBackoffBase {
+		t.Fatalf("backoff(0)=%v, ждали %v", probeBackoff(0), probeBackoffBase)
+	}
+	if probeBackoff(1) != 2*probeBackoffBase {
+		t.Fatalf("backoff(1)=%v, ждали %v", probeBackoff(1), 2*probeBackoffBase)
+	}
+	if probeBackoff(100) != probeBackoffMax {
+		t.Fatalf("backoff(100)=%v, ждали потолок %v", probeBackoff(100), probeBackoffMax)
+	}
+	if probeBackoff(3) <= probeBackoff(1) {
+		t.Fatalf("backoff не монотонен: b(3)=%v b(1)=%v", probeBackoff(3), probeBackoff(1))
+	}
+}
+
+// Пир, подтверждённый сигналкой после того как был узнан из трафика, теряет флаг
+// learned — иначе его снесёт чистка learnedExpire вопреки подтверждению сигналки.
+func TestSyncPeersClearsLearnedFlag(t *testing.T) {
+	sealer, err := crypto.NewSealer(crypto.DeriveNetworkKey("тест", "пароль"))
+	if err != nil {
+		t.Fatalf("sealer: %v", err)
+	}
+	a, b := newNode(t, sealer), newNode(t, sealer)
+	defer a.conn.Close()
+	defer b.conn.Close()
+
+	// B узнан из входящего кадра (learned=true).
+	a.eng.mu.Lock()
+	ps := a.eng.learnPeerLocked(a.eng.nets[testTag], b.id)
+	a.eng.mu.Unlock()
+	if ps == nil || !ps.learned {
+		t.Fatalf("пир не заведён как learned")
+	}
+
+	// Теперь сигналка его подтверждает.
+	a.eng.SyncPeers(testTag, []proto.PeerInfo{b.info("B")})
+	a.eng.mu.Lock()
+	stillLearned := a.eng.nets[testTag].peers[b.id].learned
+	a.eng.mu.Unlock()
+	if stillLearned {
+		t.Fatal("learned не сброшен после подтверждения сигналкой")
+	}
+}
