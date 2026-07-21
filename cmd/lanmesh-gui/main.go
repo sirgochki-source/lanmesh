@@ -92,6 +92,11 @@ type Config struct {
 	// SendLogs — отправлять ли диагностику на сигналку. Указатель, чтобы отличить
 	// «выключено» от «в старом конфиге поля не было»: по умолчанию включено.
 	SendLogs *bool `json:"sendLogs,omitempty"`
+	// PortMap — пробрасывать ли порт на роутере (PCP/NAT-PMP/UPnP) и открывать
+	// входящее правило брандмауэра. Указатель по тому же образцу, что и
+	// SendLogs: отсутствие поля в старом конфиге читается как «включено», чтобы
+	// обновление не выключило фичу молча существующим пользователям.
+	PortMap *bool `json:"portMap,omitempty"`
 	// Signals — переопределённый список сигналок; пусто = defaultSignalURLs.
 	Signals []string `json:"signals,omitempty"`
 	// Relay — переопределённый ретранслятор; nil = defaultRelayAddr, "" = без relay.
@@ -127,6 +132,9 @@ func (c *Config) removeNetworkByTag(tag string) {
 
 // sendLogs — значение с учётом умолчания (включено, если не задано явно).
 func (c Config) sendLogs() bool { return c.SendLogs == nil || *c.SendLogs }
+
+// portMap — значение с учётом умолчания (включено, если не задано явно).
+func (c Config) portMap() bool { return c.PortMap == nil || *c.PortMap }
 
 // effectiveSignals — список сигналок с учётом умолчания.
 func effectiveSignals(c Config) []string {
@@ -171,6 +179,7 @@ func main() {
 	sess = app.NewSession(effectiveSignals(c), nil, ifaceName)
 	sess.EnableLogUpload(logs, c.sendLogs())
 	sess.UseRelay(effectiveRelay(c))
+	sess.SetPortMap(c.portMap())
 	sess.SetName(c.SelfName) // своё имя из конфига (пусто = hostname)
 	// Постоянный порт: PickPort решает сам (первый запуск/занятый сохранённый —
 	// не сохраняем), колбэк дёргается только когда решение нужно записать.
@@ -203,6 +212,7 @@ func main() {
 	mux.HandleFunc("/api/disconnect", guard(handleDisconnect))
 	mux.HandleFunc("/api/reconnect", guard(handleReconnect))
 	mux.HandleFunc("/api/sendlogs", guard(handleSendLogs))
+	mux.HandleFunc("/api/portmap", guard(handlePortMap))
 	mux.HandleFunc("/api/senddiag", guard(handleSendDiag))
 	mux.HandleFunc("/api/diagnose", guard(handleDiagnose))
 	mux.HandleFunc("/api/settings", guard(handleSettings))
@@ -532,6 +542,7 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 	}
 	cfgMu.Lock()
 	sendLogs := cfg.sendLogs()
+	portMapOn := cfg.portMap()
 	cfgName := cfg.SelfName // своё имя из конфига (пусто = используется hostname)
 	savedList := make([]savedNet, 0, len(cfg.Networks))
 	for _, p := range cfg.Networks {
@@ -549,14 +560,20 @@ func handleState(w http.ResponseWriter, r *http.Request) {
 	// адреса (плейсхолдеры) намеренно не раскрываем — управляем только своими.
 	out := struct {
 		app.StateView
-		SendLogs      bool       `json:"sendLogs"`
-		SavedNetworks int        `json:"savedNetworks"`
-		SavedNets     []savedNet `json:"savedNets"`
-		CfgSignals    []string   `json:"cfgSignals"`
-		CfgRelay      string     `json:"cfgRelay"`
-		CfgName       string     `json:"cfgName"`
-		Version       string     `json:"version"`
-	}{StateView: st, SendLogs: sendLogs, SavedNetworks: len(savedList), SavedNets: savedList, CfgSignals: cfgSignals, CfgRelay: cfgRelay, CfgName: cfgName, Version: version}
+		SendLogs       bool       `json:"sendLogs"`
+		PortMapEnabled bool       `json:"portMapEnabled"` // чекбокс — состояние из конфига, как sendLogs
+		Portmap        string     `json:"portmap"`        // строка статуса проброса (см. Session.PortmapStatus)
+		IPv6           bool       `json:"ipv6"`           // есть ли свой маршрутизируемый IPv6 (портмапу тогда не нужен)
+		SavedNetworks  int        `json:"savedNetworks"`
+		SavedNets      []savedNet `json:"savedNets"`
+		CfgSignals     []string   `json:"cfgSignals"`
+		CfgRelay       string     `json:"cfgRelay"`
+		CfgName        string     `json:"cfgName"`
+		Version        string     `json:"version"`
+	}{
+		StateView: st, SendLogs: sendLogs, PortMapEnabled: portMapOn, Portmap: sess.PortmapStatus(), IPv6: app.HasGlobalIPv6(),
+		SavedNetworks: len(savedList), SavedNets: savedList, CfgSignals: cfgSignals, CfgRelay: cfgRelay, CfgName: cfgName, Version: version,
+	}
 	writeJSON(w, out, http.StatusOK)
 }
 
@@ -771,6 +788,35 @@ func handleSendLogs(w http.ResponseWriter, r *http.Request) {
 		log.Printf("отправка диагностики на сигналку включена")
 	} else {
 		log.Printf("отправка диагностики на сигналку выключена")
+	}
+	writeJSON(w, map[string]bool{"ok": true}, http.StatusOK)
+}
+
+// handlePortMap включает/выключает проброс порта на роутере. Выключение
+// действует немедленно (снимается маппинг и правило брандмауэра); включение
+// на уже поднятом узле применится только со следующим переподключением — см.
+// комментарий у Session.SetPortMap.
+func handlePortMap(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "bad json"}, http.StatusBadRequest)
+		return
+	}
+
+	sess.SetPortMap(req.Enabled)
+
+	cfgMu.Lock()
+	v := req.Enabled
+	cfg.PortMap = &v
+	saveConfig(cfg)
+	cfgMu.Unlock()
+
+	if req.Enabled {
+		log.Printf("проброс порта включён (применится при следующем подключении)")
+	} else {
+		log.Printf("проброс порта выключен")
 	}
 	writeJSON(w, map[string]bool{"ok": true}, http.StatusOK)
 }

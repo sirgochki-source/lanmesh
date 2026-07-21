@@ -29,6 +29,7 @@ import (
 	"github.com/sirgochki-source/lanmesh/internal/logbuf"
 	"github.com/sirgochki-source/lanmesh/internal/netcache"
 	"github.com/sirgochki-source/lanmesh/internal/peer"
+	"github.com/sirgochki-source/lanmesh/internal/portmap"
 	"github.com/sirgochki-source/lanmesh/internal/proto"
 	"github.com/sirgochki-source/lanmesh/internal/signal"
 	"github.com/sirgochki-source/lanmesh/internal/tun"
@@ -201,6 +202,29 @@ type Session struct {
 	savedPort    int
 	onPortChosen func(port int)
 
+	// portMapEnabled — пробрасывать ли порт на роутере (PCP/NAT-PMP/UPnP), см.
+	// SetPortMap. Атомарный: читается в bringUpNode и меняется из HTTP-хендлера
+	// GUI конкурентно. Дефолт — включено (см. NewSession), а не нулевое значение
+	// atomic.Bool: иначе headless-CLI, никогда не зовущий SetPortMap, получил бы
+	// фичу молча выключенной.
+	portMapEnabled atomic.Bool
+	// portmapCancel останавливает текущий цикл проброса (см. startPortMap);
+	// nil, пока цикл не запущен. Под mu.
+	portmapCancel context.CancelFunc
+	// portmapGen — поколение текущего цикла проброса. RemoveInbound (netsh)
+	// может тянуться секунды, и быстрый Stop+AddNetwork успевает поднять новый
+	// цикл раньше, чем уборка старого доберётся до defer — без счётчика этот
+	// defer затёр бы поля/cancel уже нового цикла своим "очищено". Проверяется
+	// только в defer'е (см. portmapLoop) — рабочие обновления внутри цикла
+	// сами перетрутся следующим раундом новой генерации, если гонка всё же
+	// случится, так что там счётчик не нужен.
+	portmapGen uint64
+	// Под mu — снимок последнего раунда проброса, для /api/state (см. PortmapStatus).
+	portmapAddr     string // "ip:port" от роутера; "" — ни разу не было маппинга
+	portmapProto    string // "pcp" | "natpmp" | "upnp"
+	portmapFwErr    string // ошибка netsh при заведении правила; "" = заведено (или не пробовали)
+	portmapNoRouter bool   // каскад завершился БЕЗ маппинга — ни один протокол не ответил
+
 	// cache — подтверждённые endpoint'ы пиров между запусками (см. internal/netcache).
 	// Открывается один раз при создании сессии и живёт, пока жива сессия — узел
 	// поднимается и снимается многократно, а кэш должен пережить каждый цикл.
@@ -262,13 +286,15 @@ func NewSession(signalURLs []string, stunServers []string, iface string) *Sessio
 	if len(stunServers) == 0 {
 		stunServers = signal.DefaultSTUNServers
 	}
-	return &Session{
+	s := &Session{
 		signalURLs:  signalURLs,
 		stunServers: stunServers,
 		iface:       iface,
 		nets:        make(map[[32]byte]*netSession),
 		cache:       netcache.Open(netcachePath()),
 	}
+	s.portMapEnabled.Store(true) // дефолт «включено» — см. комментарий у поля
+	return s
 }
 
 // netcachePath — файл кэша подтверждённых endpoint'ов, рядом с identity/
@@ -311,6 +337,32 @@ func (s *Session) SetSignalURLs(urls []string) error {
 	}
 	s.signalURLs = urls
 	return nil
+}
+
+// SetPortMap включает/выключает проброс порта на роутере (PCP/NAT-PMP/UPnP) и
+// связанное с ним входящее правило брандмауэра. Можно звать в любой момент.
+//
+// Симметрично НЕ ведёт себя специально: включение на уже поднятом узле
+// применится только со следующим переподключением (bringUpNode читает флаг
+// один раз при старте), а выключение действует немедленно. Причина в
+// асимметрии рисков: живое выключение — это только отмена контекста, после
+// которой цикл сам снимает маппинг и правило брандмауэра, гонки нет. Живое
+// включение потребовало бы либо гонки «правило добавили после того, как
+// предыдущий цикл его удалил» при быстром выключить-включить, либо отдельного
+// избавления от неё (генерации, единственная горутина-владелец) — усложнение,
+// не оправданное чекбоксом в панели. Пользователь просто переподключается,
+// если хочет включить фичу без перезапуска приложения.
+func (s *Session) SetPortMap(enabled bool) {
+	was := s.portMapEnabled.Swap(enabled)
+	if enabled || was == enabled {
+		return
+	}
+	s.mu.Lock()
+	cancel := s.portmapCancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel() // portmapLoop сам снимет маппинг/правило и очистит поля статуса
+	}
 }
 
 // EnableLogUpload подключает отправку диагностики на сигналку из buf.
@@ -754,6 +806,12 @@ func (s *Session) bringUpNode() error {
 	go s.reflexFanout(kick, nodeStop)
 	go s.logLoop(nodeStop)
 	go s.cacheSaveLoop(nodeStop)
+	// startPortMap только СПРАВЛЯЕТ горутину и возвращается — сам каскад (до
+	// cascadeTimeout) и обновление аренды идут полностью в фоне, не задерживая
+	// возврат из bringUpNode ни на миллисекунду сверх уже сделанного STUN/TUN.
+	if s.portMapEnabled.Load() {
+		s.startPortMap(nodeStop, localPort, ext)
+	}
 
 	log.Printf("узел поднят, виртуальный IP %s", selfIP)
 	return nil
@@ -834,17 +892,183 @@ func (s *Session) reflexFanout(engineKick <-chan struct{}, nodeStop <-chan struc
 		case <-nodeStop:
 			return
 		case <-engineKick:
-			s.mu.Lock()
-			kicks := append([]chan struct{}(nil), s.kickFanout...)
-			s.mu.Unlock()
-			for _, k := range kicks {
-				select {
-				case k <- struct{}{}:
-				default: // сигнал уже висит — одного достаточно
-				}
-			}
+			s.wakeRegistration()
 		}
 	}
+}
+
+// wakeRegistration будит все register/dht-циклы на немедленную перерегистрацию.
+// Общий выход как для смены reflex-адреса (reflexFanout), так и для обновления
+// проброса (portmapLoop) — оба меняют то, что вернёт следующий nodeEndpoints(),
+// и оба хотят разослать это как можно быстрее, а не ждать штатный тик (до
+// registerSlow/dhtRoundSlow — вплоть до 10 минут).
+func (s *Session) wakeRegistration() {
+	s.mu.Lock()
+	kicks := append([]chan struct{}(nil), s.kickFanout...)
+	s.mu.Unlock()
+	for _, k := range kicks {
+		select {
+		case k <- struct{}{}:
+		default: // сигнал уже висит — одного достаточно
+		}
+	}
+}
+
+// startPortMap запускает цикл проброса порта в фоне. НЕ блокирует и не ждёт
+// результата: зовётся из bringUpNode, где старт узла не имеет права ждать
+// каскад (до cascadeTimeout) или последующие сетевые обращения (задание —
+// «проброс не имеет права замедлить старт», см. отчёт задачи). Результат
+// приходит в nodeEndpoints через s.portmapAddr и wakeRegistration.
+func (s *Session) startPortMap(nodeStop <-chan struct{}, localPort int, stunExt string) {
+	ctx, cancel := context.WithCancel(context.Background())
+	s.mu.Lock()
+	s.portmapGen++
+	gen := s.portmapGen
+	s.portmapCancel = cancel
+	s.mu.Unlock()
+	// Отдельная горутина, а не select внутри portmapLoop на nodeStop: portmapLoop
+	// уже слушает ctx (через range по каналу portmap.Run), а нам нужно СВЯЗАТЬ два
+	// независимых источника отмены (снятие узла и явный SetPortMap(false)) в один ctx.
+	go func() {
+		select {
+		case <-nodeStop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	go s.portmapLoop(ctx, gen, localPort, stunExt)
+}
+
+// portmapLoop держит проброс порта живым, пока ctx не отменят (снятие узла или
+// выключение галки), и на каждый новый/обновлённый маппинг заводит входящее
+// правило брандмауэра — без него проброс бесполезен именно в сценарии
+// cone↔CGNAT, ради которого затевался (см. комментарий у pickExternal).
+//
+// Провал правила брандмауэра НЕ останавливает цикл и НЕ мешает анонсировать
+// адрес: узел продолжает работать, проброс остаётся анонсированным (он уже
+// отбракован portmap.Usable и может прекрасно работать даже без НАШЕГО
+// правила — например, если брандмауэр в системе и так разрешает трафик или
+// выключен), а в статус уходит отдельная пометка «брандмауэр блокирует
+// входящие». Домены с групповой политикой запрещают правила даже
+// администратору, и падать/переставать анонсировать проброс из-за этого нельзя.
+func (s *Session) portmapLoop(ctx context.Context, gen uint64, localPort int, stunExt string) {
+	defer func() {
+		_ = portmap.RemoveInbound()
+		s.clearPortmapIfCurrent(gen)
+		s.wakeRegistration() // адрес мог пропасть — пересобрать кандидатов немедленно
+	}()
+
+	var stunIP netip.Addr
+	if ap, err := netip.ParseAddrPort(stunExt); err == nil {
+		stunIP = ap.Addr()
+	}
+
+	got := false
+	for m := range portmap.Run(ctx, localPort, stunIP) {
+		got = true
+		var fwErr string
+		// AllowInbound привязан к localPort (куда роутер форвардит ПОСЛЕ NAT), а
+		// не к внешнему порту из m.External — снаружи он может отличаться (роутер
+		// сам выбрал другой), но внутри LAN назначение пакета всегда localPort.
+		if err := portmap.AllowInbound(localPort); err != nil {
+			fwErr = err.Error()
+			log.Printf("проброс: правило брандмауэра не заведено (%v) — брандмауэр блокирует входящие", err)
+		}
+		s.mu.Lock()
+		s.portmapAddr = m.External.String()
+		s.portmapProto = m.Proto
+		s.portmapFwErr = fwErr
+		s.portmapNoRouter = false
+		s.mu.Unlock()
+		if fwErr == "" {
+			log.Printf("проброс: внешний адрес %s (%s), правило брандмауэра заведено", m.External, m.Proto)
+		} else {
+			log.Printf("проброс: внешний адрес %s (%s) получен, но брандмауэр блокирует входящие", m.External, m.Proto)
+		}
+		s.wakeRegistration()
+	}
+	if !got {
+		select {
+		case <-ctx.Done():
+			// Отменили раньше, чем каскад вообще ответил (выключили галку/сняли
+			// узел до истечения cascadeTimeout) — это не «роутер не поддерживает»,
+			// поднимать такой статус не нужно.
+		default:
+			s.mu.Lock()
+			s.portmapNoRouter = true
+			s.mu.Unlock()
+			log.Printf("проброс: роутер не поддерживает PCP/NAT-PMP/UPnP (или недоступен)")
+		}
+	}
+}
+
+// clearPortmapIfCurrent сбрасывает состояние проброса (cancel и снимок для
+// статуса) — но только если gen всё ещё актуальное поколение. Вынесено
+// отдельно от defer в portmapLoop ради теста гонки: RemoveInbound (netsh)
+// может тянуться секунды, и быстрый Stop+AddNetwork успевает поднять НОВЫЙ
+// цикл (новое поколение) раньше, чем уборка старого доберётся сюда — без
+// проверки поколения она затёрла бы состояние уже нового цикла своим «очищено».
+func (s *Session) clearPortmapIfCurrent(gen uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.portmapGen != gen {
+		return
+	}
+	s.portmapCancel = nil
+	s.portmapAddr, s.portmapProto, s.portmapFwErr, s.portmapNoRouter = "", "", "", false
+}
+
+// PortmapStatus — человекочитаемая строка состояния проброса порта для панели.
+func (s *Session) PortmapStatus() string {
+	if !s.portMapEnabled.Load() {
+		return "выключен"
+	}
+	s.mu.Lock()
+	up := s.up
+	running := s.portmapCancel != nil
+	addr, viaProto, fwErr, noRouter := s.portmapAddr, s.portmapProto, s.portmapFwErr, s.portmapNoRouter
+	s.mu.Unlock()
+	if !up {
+		return "узел не запущен"
+	}
+	switch {
+	case addr != "" && fwErr != "":
+		return fmt.Sprintf("проброшен %s (%s), но брандмауэр блокирует входящие", addr, viaProto)
+	case addr != "":
+		return fmt.Sprintf("работает: %s (%s)", addr, viaProto)
+	case noRouter:
+		return "роутер не поддерживает проброс (PCP/NAT-PMP/UPnP не ответили)"
+	case !running:
+		// Включили галку на уже поднятом узле: цикл стартует только со следующим
+		// подключением (см. SetPortMap) — без этой ветки статус завис бы на
+		// «определяем…» навсегда, хотя проверять на самом деле нечего: никто не
+		// запущен. portmapCancel==nil — тот же признак, что использует SetPortMap
+		// для решения «цикл сейчас не бежит».
+		return "включится при следующем подключении"
+	default:
+		return "определяем поддержку роутером…"
+	}
+}
+
+// HasGlobalIPv6 — есть ли у машины собственный маршрутизируемый IPv6 (не
+// туннель Teredo/6to4, не ULA/link-local). При таком адресе NAT для IPv6 нет
+// вовсе, и проброс/правило брандмауэра этой стороне не нужны — тот же фильтр,
+// что уже отбирает IPv6-кандидатов в localEndpoints (isEligibleLocalIP).
+func HasGlobalIPv6() bool {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		ipnet, ok := a.(*net.IPNet)
+		if !ok || ipnet.IP.To4() != nil {
+			continue
+		}
+		if isEligibleLocalIP(ipnet.IP) {
+			return true
+		}
+	}
+	return false
 }
 
 // State отдаёт снимок узла и всех его сетей.
@@ -1329,7 +1553,13 @@ func (s *Session) dhtLoop(ns *netSession) {
 
 // pickExternal выбирает внешний адрес узла из доступных источников.
 //
-// Приоритет (последний непустой выигрывает): стартовый STUN (заморожен) <
+// portmapExt — адрес, проброшенный на роутере. Он ВНЕ гистерезиса и бьёт
+// остальные источники: в отличие от рефлекса, он endpoint-independent (один и
+// тот же для всех адресатов), поэтому не участвует в скачках, ради подавления
+// которых гистерезис писался, — он их устраняет. Приходит уже отбракованным
+// (см. portmap.Usable), так что проверять его здесь нечего.
+//
+// Приоритет остальных (последний непустой выигрывает): стартовый STUN (заморожен) <
 // peer-reflex (протухает при обрыве) < публичный relay-reflex < живой STUN.
 //
 // Гистерезис: если прежний адрес cur всё ещё среди ЖИВЫХ источников — держим его,
@@ -1346,7 +1576,10 @@ func (s *Session) dhtLoop(ns *netSession) {
 // порт — заморозка означала бы вечный анонс мёртвого адреса после смены маппинга.
 // На cone NAT liveStun==stunExt, так что cur всё равно совпадёт с liveStun и адрес
 // остаётся стабильным — стикинес не теряется там, где он нужен.
-func pickExternal(cur, stunExt, selfRefl, relayPub, liveStun string) string {
+func pickExternal(cur, stunExt, selfRefl, relayPub, liveStun, portmapExt string) string {
+	if portmapExt != "" {
+		return portmapExt
+	}
 	ext := stunExt
 	for _, c := range []string{selfRefl, relayPub, liveStun} {
 		if c != "" {
@@ -1376,6 +1609,7 @@ func (s *Session) nodeEndpoints() []string {
 	stunExt := s.stunExt
 	localPort := s.localPort
 	cur := s.selfEndpoint
+	portmapExt := s.portmapAddr
 	s.mu.Unlock()
 
 	var liveStun, selfRefl, relayRaw string
@@ -1394,7 +1628,7 @@ func (s *Session) nodeEndpoints() []string {
 	if isPublicEndpoint(relayRaw) {
 		relayPub = relayRaw
 	}
-	ext := pickExternal(cur, stunExt, selfRefl, relayPub, liveStun)
+	ext := pickExternal(cur, stunExt, selfRefl, relayPub, liveStun, portmapExt)
 	front := make([]string, 0, 4)
 	seenEP := make(map[string]bool)
 	for _, c := range []string{ext, liveStun, relayPub, selfRefl} {

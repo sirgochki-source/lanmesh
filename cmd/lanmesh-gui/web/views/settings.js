@@ -30,6 +30,9 @@ export function settingsBody(state) {
     + `<div class="frow"><button class="btn-primary" data-act="cfg-save" ${dis}>Сохранить</button>`
     + `<button class="btn-ghost" data-act="cfg-reset" ${dis}>Сбросить к стандартным</button></div>`
     + `<div class="hint">${lockNote}</div>`
+    + `<h2 class="soon-h">Проброс порта</h2>`
+    + `<label class="chk"><input type="checkbox" id="s-portmap" ${state.portMapEnabled ? 'checked' : ''} data-act="portmap"> пробрасывать порт на роутере (PCP/NAT-PMP/UPnP)</label>`
+    + `<div class="hint">${esc(state.portmap || '')}</div>`
     + `<h2 class="soon-h">Диагностика</h2>`
     + `<button class="btn-ghost" data-act="senddiag">📤 Отправить диагностику</button>`
     + `<label class="chk"><input type="checkbox" id="s-logs" ${state.sendLogs ? 'checked' : ''} data-act="sendlogs"> автоотправка логов</label>`

@@ -312,6 +312,7 @@ document.addEventListener('click', async (e) => {
 });
 document.addEventListener('change', async (e) => {
   if (e.target.closest('[data-act]')?.dataset.act === 'sendlogs') await postJSON('/api/sendlogs', { enabled: e.target.checked });
+  if (e.target.closest('[data-act]')?.dataset.act === 'portmap') await postJSON('/api/portmap', { enabled: e.target.checked });
 });
 // Отзывчивость: если пользователь не выбирал режим руками — следуем ширине окна.
 //
