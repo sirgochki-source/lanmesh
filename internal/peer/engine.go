@@ -62,6 +62,15 @@ const (
 	addrGossipTick = 15 * time.Second
 	maxCandidates  = 12 // потолок кандидатов на пира: чужой госсип не должен раздуть список
 
+	// pexGossipTick — как часто шлём подтверждённым пирам FramePeers (адреса
+	// ДРУГИХ подтверждённых прямых пиров той же сети). Реже addrGossipTick: это
+	// уже вторичное распространение — транзитивная связность выигрывает и от
+	// более редкой рассылки, а растущий список пиров дороже пары своих кандидатов.
+	pexGossipTick = 30 * time.Second
+	// maxPexEntries — потолок записей в кадре PEX. 16×19+1 = 305 байт худшего
+	// случая (все IPv6) — с запасом влезает в MTU 1280.
+	maxPexEntries = 16
+
 	// Живой переопрос STUN на боевом сокете — чтобы внешний адрес не замерзал на
 	// стартовом значении: NAT со временем перевешивает порт, и старый адрес ломает
 	// прямой путь до самого реконнекта. Часто, пока путь деградировал (есть relay/
@@ -911,6 +920,32 @@ func (e *Engine) netToTun() error {
 				ps.name = name
 				e.mu.Unlock()
 			}
+		case proto.FramePeers:
+			// Транзитивный PEX: пир прислал адреса СВОИХ подтверждённых прямых
+			// пиров. Прямо в общий пул проб — там уже есть дедуп, потолок
+			// maxProbes и отдельная от endpoints очередь. Настоящим пиром адрес
+			// станет только когда придёт кадр, расшифрованный ключом сети, — как
+			// с DHT, PeerID тут ничего не решает.
+			e.mu.RLock()
+			selfCands := append([]string(nil), e.selfCands...)
+			e.mu.RUnlock()
+			pexAddrs := make([]string, 0, maxPexEntries)
+			for _, ap := range decodePeers(payload) {
+				s := ap.String()
+				own := false
+				for _, c := range selfCands {
+					if c == s {
+						own = true // свой же адрес (глазами пира) долбить незачем
+						break
+					}
+				}
+				if !own {
+					pexAddrs = append(pexAddrs, s)
+				}
+			}
+			if len(pexAddrs) > 0 {
+				e.AddProbes(nw.tag, pexAddrs)
+			}
 		}
 	}
 }
@@ -980,8 +1015,17 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 		id     proto.PeerID
 		reflex string // адрес пира, каким мы его видим ("" через relay)
 	}
+	// pexJob — рассылка FramePeers. payload общий на всю сеть (список ЕЁ
+	// подтверждённых прямых пиров), поэтому кодируем его раз на сеть, а не на
+	// каждого получателя.
+	type pexJob struct {
+		n       *network
+		dst     netip.AddrPort // прямой адрес; пустой = через ретранслятор
+		id      proto.PeerID
+		payload []byte
+	}
 
-	var lastBind, lastGossip, lastStun time.Time
+	var lastBind, lastGossip, lastPex, lastStun time.Time
 	for {
 		select {
 		case <-done:
@@ -993,7 +1037,9 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 		var pings []pingJob
 		var punches []punchJob
 		var gossips []gossipJob
+		var pexes []pexJob
 		gossipDue := now.Sub(lastGossip) >= addrGossipTick
+		pexDue := now.Sub(lastPex) >= pexGossipTick
 
 		e.mu.Lock()
 		hasRelay := e.relay.IsValid()
@@ -1009,6 +1055,24 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 			if nwRelay {
 				netsList = append(netsList, nw)
 			}
+
+			// PEX-полезная нагрузка этой сети: адреса ЕЁ подтверждённых прямых
+			// пиров (не кандидатов и не relay-only — иначе мусор размножается).
+			// Считаем раз на сеть, а не на каждого получателя: рассылка всем её
+			// подтверждённым пирам получает один и тот же список.
+			var pexPayload []byte
+			if pexDue {
+				var direct []netip.AddrPort
+				for _, ps := range nw.peers {
+					if ps.active.IsValid() && now.Sub(ps.lastRecv) < peerTimeout {
+						direct = append(direct, ps.active)
+					}
+				}
+				if len(direct) > 0 {
+					pexPayload = encodePeers(direct)
+				}
+			}
+
 			// Голые адреса от обнаружения (DHT): долбим их пробитием. Ответит только
 			// тот, у кого есть ключ сети, — и станет пиром. Долбим с экспоненциальным
 			// backoff, а не каждый тик: адрес из ПУБЛИЧНОЙ DHT может быть мусором или
@@ -1055,6 +1119,16 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 						gossips = append(gossips, gossipJob{n: nw, dst: ps.active, reflex: ps.active.String()})
 					} else {
 						gossips = append(gossips, gossipJob{n: nw, id: ps.id}) // через relay reflex не знаем
+					}
+				}
+				// PEX — тем же получателям, что и gossip (подтверждённым прямым и
+				// доступным через relay); содержимое уже отфильтровано выше до
+				// подтверждённых прямых, отдельно от получателей.
+				if pexDue && len(pexPayload) > 0 && (confirmed || relayPath) {
+					if confirmed {
+						pexes = append(pexes, pexJob{n: nw, dst: ps.active, payload: pexPayload})
+					} else {
+						pexes = append(pexes, pexJob{n: nw, id: ps.id, payload: pexPayload})
 					}
 				}
 
@@ -1139,6 +1213,19 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 					} else {
 						e.writeFrameRelay(g.n, g.id, proto.FrameHello, []byte(selfName))
 					}
+				}
+			}
+		}
+		if pexDue {
+			// Сбрасываем таймер тика ДАЖЕ если слать было некому/нечего — иначе
+			// pexDue остаётся истинным на каждом тике punchInterval, пока не
+			// появится хоть один подтверждённый пир, которому есть что разослать.
+			lastPex = now
+			for _, p := range pexes {
+				if p.dst.IsValid() {
+					e.writeFrame(p.n, p.dst, proto.FramePeers, p.payload)
+				} else {
+					e.writeFrameRelay(p.n, p.id, proto.FramePeers, p.payload)
 				}
 			}
 		}
@@ -1562,6 +1649,71 @@ func takeStr(p []byte) (string, []byte, bool) {
 		return "", p, false
 	}
 	return string(p[:n]), p[n:], true
+}
+
+// --- PEX: обмен адресами пиров (FramePeers) ---------------------------------
+
+// encodePeers/decodePeers — тело FramePeers: [count:1], затем count раз
+// [family:1][addr:4|16][port:2 big-endian]. Только адреса, без PeerID — кто
+// окажется за адресом, выяснится при расшифровке ключом сети (см. FramePeers).
+func encodePeers(addrs []netip.AddrPort) []byte {
+	if len(addrs) > maxPexEntries {
+		addrs = addrs[:maxPexEntries]
+	}
+	out := make([]byte, 0, 1+len(addrs)*19)
+	out = append(out, byte(len(addrs)))
+	for _, ap := range addrs {
+		a := ap.Addr().Unmap()
+		if a.Is4() {
+			b := a.As4()
+			out = append(out, 4)
+			out = append(out, b[:]...)
+		} else {
+			b := a.As16()
+			out = append(out, 6)
+			out = append(out, b[:]...)
+		}
+		out = append(out, byte(ap.Port()>>8), byte(ap.Port()))
+	}
+	return out
+}
+
+func decodePeers(p []byte) []netip.AddrPort {
+	if len(p) < 1 {
+		return nil
+	}
+	n := int(p[0])
+	if n > maxPexEntries {
+		n = maxPexEntries
+	}
+	p = p[1:]
+	var out []netip.AddrPort
+	for i := 0; i < n; i++ {
+		if len(p) < 1 {
+			break
+		}
+		var size int
+		switch p[0] {
+		case 4:
+			size = 4
+		case 6:
+			size = 16
+		default:
+			// Неизвестное семейство: длину записи посчитать нельзя, поэтому
+			// дальше разбирать нечего — выходим, но уже собранное отдаём.
+			return out
+		}
+		if len(p) < 1+size+2 {
+			break
+		}
+		addr, ok := netip.AddrFromSlice(p[1 : 1+size])
+		if ok {
+			port := uint16(p[1+size])<<8 | uint16(p[1+size+1])
+			out = append(out, netip.AddrPortFrom(addr.Unmap(), port))
+		}
+		p = p[1+size+2:]
+	}
+	return out
 }
 
 // --- разбор IPv4 ------------------------------------------------------------
