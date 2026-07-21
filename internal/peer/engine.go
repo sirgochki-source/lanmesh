@@ -1663,7 +1663,10 @@ func encodePeers(addrs []netip.AddrPort) []byte {
 	out := make([]byte, 0, 1+len(addrs)*19)
 	out = append(out, byte(len(addrs)))
 	for _, ap := range addrs {
-		a := ap.Addr().Unmap()
+		// Без Unmap: сюда приходят только внутренние адреса движка (ps.active),
+		// а инвариант пакета гарантирует, что mapped-формы среди них нет —
+		// нормализация уже сделана на всех входах (см. netToTun/AddProbes).
+		a := ap.Addr()
 		if a.Is4() {
 			b := a.As4()
 			out = append(out, 4)
