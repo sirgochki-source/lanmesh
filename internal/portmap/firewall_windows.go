@@ -12,12 +12,10 @@
 package portmap
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"syscall"
-	"time"
+
+	"github.com/sirgochki-source/lanmesh/internal/winexec"
 )
 
 // ruleName — по нему же правило и удаляется, поэтому имя фиксированное.
@@ -34,7 +32,7 @@ func AllowInbound(localPort int) error {
 	// Старое правило сносим всегда: порт мог смениться, а netsh при add с тем же
 	// именем создаёт ВТОРОЕ правило, а не заменяет первое.
 	_ = RemoveInbound()
-	return netsh("advfirewall", "firewall", "add", "rule",
+	return winexec.Netsh("advfirewall", "firewall", "add", "rule",
 		"name="+ruleName, "dir=in", "action=allow", "protocol=UDP",
 		fmt.Sprintf("localport=%d", localPort), "program="+exe, "enable=yes")
 }
@@ -42,23 +40,5 @@ func AllowInbound(localPort int) error {
 // RemoveInbound снимает правило (best-effort — вызывающий не обязан проверять
 // ошибку при штатной уборке на выходе).
 func RemoveInbound() error {
-	return netsh("advfirewall", "firewall", "delete", "rule", "name="+ruleName)
-}
-
-// netsh — та же схема, что в internal/tun/tun_windows.go: таймаут, чтобы
-// зависший netsh (битый helper-dll, групповые политики) не вешал вызывающего,
-// и HideWindow, чтобы у GUI-сборки не мелькала консоль.
-func netsh(args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "netsh", args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("netsh %v: превышен таймаут (10с)", args)
-	}
-	if err != nil {
-		return fmt.Errorf("netsh %v: %w (%s)", args, err, out)
-	}
-	return nil
+	return winexec.Netsh("advfirewall", "firewall", "delete", "rule", "name="+ruleName)
 }
