@@ -8,19 +8,16 @@
 package tun
 
 import (
-	"context"
 	"crypto/sha256"
 	_ "embed"
 	"fmt"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
-	"syscall"
-	"time"
 
+	"github.com/sirgochki-source/lanmesh/internal/winexec"
 	"golang.org/x/sys/windows"
 	"golang.zx2c4.com/wintun"
 )
@@ -156,28 +153,9 @@ func New(name string, ip netip.Addr, prefixBits int) (*Device, error) {
 	return d, nil
 }
 
-// runNetsh запускает netsh с таймаутом и БЕЗ видимого окна консоли. Таймаут: netsh
-// эпизодически виснет (битый helper-dll, групповые политики), а вызов идёт под opMu
-// при поднятии узла — без дедлайна завис бы весь старт. HideWindow: GUI-версия без
-// консоли, иначе на каждый вызов мигало бы чёрное окно.
-func runNetsh(args ...string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "netsh", args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("netsh %v: превышен таймаут (10с)", args)
-	}
-	if err != nil {
-		return fmt.Errorf("netsh %v: %w (%s)", args, err, out)
-	}
-	return nil
-}
-
 // setMTU занижает MTU адаптера под накладные расходы туннеля (см. virtualMTU).
 func (d *Device) setMTU(mtu int) error {
-	return runNetsh("interface", "ipv4", "set", "subinterface",
+	return winexec.Netsh("interface", "ipv4", "set", "subinterface",
 		d.name, fmt.Sprintf("mtu=%d", mtu), "store=active")
 }
 
@@ -188,7 +166,7 @@ func (d *Device) assignIP(ip netip.Addr, prefixBits int) error {
 	if !ip.Is4() {
 		return fmt.Errorf("assignIP: ожидался IPv4-адрес, получен %s", ip)
 	}
-	return runNetsh("interface", "ip", "set", "address",
+	return winexec.Netsh("interface", "ip", "set", "address",
 		fmt.Sprintf("name=%s", d.name), "static", ip.String(), maskString(prefixBits))
 }
 

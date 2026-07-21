@@ -62,6 +62,15 @@ const (
 	addrGossipTick = 15 * time.Second
 	maxCandidates  = 12 // потолок кандидатов на пира: чужой госсип не должен раздуть список
 
+	// pexGossipTick — как часто шлём подтверждённым пирам FramePeers (адреса
+	// ДРУГИХ подтверждённых прямых пиров той же сети). Реже addrGossipTick: это
+	// уже вторичное распространение — транзитивная связность выигрывает и от
+	// более редкой рассылки, а растущий список пиров дороже пары своих кандидатов.
+	pexGossipTick = 30 * time.Second
+	// maxPexEntries — потолок записей в кадре PEX. 16×19+1 = 305 байт худшего
+	// случая (все IPv6) — с запасом влезает в MTU 1280.
+	maxPexEntries = 16
+
 	// Живой переопрос STUN на боевом сокете — чтобы внешний адрес не замерзал на
 	// стартовом значении: NAT со временем перевешивает порт, и старый адрес ломает
 	// прямой путь до самого реконнекта. Часто, пока путь деградировал (есть relay/
@@ -154,7 +163,7 @@ type network struct {
 
 // probeAddr — голый адрес-кандидат и момент, когда мы о нём узнали.
 type probeAddr struct {
-	addr     *net.UDPAddr
+	addr     netip.AddrPort
 	added    time.Time // момент ПЕРВОГО обнаружения — от него абсолютный probeTTL
 	tries    int       // сколько раз уже долбили (для экспоненциального backoff)
 	lastPoke time.Time // когда долбили в последний раз
@@ -168,10 +177,10 @@ type peerState struct {
 	// сигналка не «ведёт»: чистит его по молчанию maintenance (learnedExpire).
 	learned bool
 	virtualIP netip.Addr
-	endpoints []*net.UDPAddr // кандидаты (STUN + локальные)
-	active    *net.UDPAddr   // подтверждён по входящему пакету — ТОЛЬКО прямой путь
-	lastRecv  time.Time      // когда пришёл прямой пакет
-	firstSeen time.Time      // когда узнали о пире — от него отсчитываем relayGrace
+	endpoints []netip.AddrPort // кандидаты (STUN + локальные)
+	active    netip.AddrPort   // подтверждён по входящему пакету — ТОЛЬКО прямой путь
+	lastRecv  time.Time        // когда пришёл прямой пакет
+	firstSeen time.Time        // когда узнали о пире — от него отсчитываем relayGrace
 
 	// Ретранслятор. lastRelayRecv отдельно от lastRecv: пакет через relay НЕ
 	// подтверждает прямой endpoint, иначе мы бы считали дырку пробитой и слали
@@ -218,7 +227,8 @@ type Engine struct {
 	selfName string
 
 	// Ретранслятор общий (адрес один); тег у каждой сети свой, см. network.
-	relay *net.UDPAddr
+	// Пустое значение (netip.AddrPort{}) = релей не задан, проверка — IsValid.
+	relay netip.AddrPort
 
 	mu   sync.RWMutex
 	nets map[[relayTagLen]byte]*network // сети по тегу
@@ -240,6 +250,10 @@ type Engine struct {
 	stunServers []string
 	stunReflex  string
 	stunPending map[[12]byte]time.Time
+
+	// onDirect — наружу сообщаем ТОЛЬКО подтверждённый прямой адрес (пришёл
+	// расшифрованный кадр). Кандидаты не годятся: кэш накопил бы мусор из DHT.
+	onDirect func(tag [relayTagLen]byte, id proto.PeerID, addr netip.AddrPort)
 }
 
 // NewEngine создаёт движок на готовом UDP-сокете и TUN-устройстве. Сети
@@ -314,6 +328,15 @@ func (e *Engine) SetSelfName(name string) {
 	e.mu.Unlock()
 }
 
+// OnDirectConfirmed ставит колбэк, дёргаемый при подтверждении прямого пути к
+// пиру. Зовётся из горячего пути чтения — колбэк обязан быть быстрым и не
+// блокировать (запись в кэш идёт в память, на диск сохраняет таймер сессии).
+func (e *Engine) OnDirectConfirmed(fn func(tag [relayTagLen]byte, id proto.PeerID, addr netip.AddrPort)) {
+	e.mu.Lock()
+	e.onDirect = fn
+	e.mu.Unlock()
+}
+
 // SetNetworkRelay разрешает или запрещает сети пользоваться ретранслятором.
 // Запрет полный: ни bind (значит, релей не узнает даже тега сети), ни отправка
 // через него, ни приём. Вызывать сразу после AddNetwork.
@@ -342,10 +365,17 @@ func (e *Engine) AddProbes(tag [relayTagLen]byte, addrs []string) {
 	}
 	now := time.Now()
 	for _, s := range addrs {
-		a, err := net.ResolveUDPAddr("udp4", s)
-		if err != nil || a.IP == nil || a.Port == 0 {
+		// ParseAddrPort, а не ResolveUDPAddr: адрес из DHT — всегда литерал ip:port,
+		// а резолвер ходил бы в DNS прямо под e.mu на любой мусор из публичной сети.
+		a, err := netip.ParseAddrPort(s)
+		if err != nil || a.Port() == 0 {
 			continue
 		}
+		// Адрес чужой (кадр DHT), может прийти в mapped-форме (::ffff:a.b.c.d).
+		// Внутри движка mapped-адресов быть не должно: Unmap реального IPv6 не
+		// трогает, а mapped IPv4 схлопывает с его же unmapped-формой — иначе один
+		// физический адрес держал бы два слота в maxProbes и не дедуплицировался.
+		a = netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
 		k := a.String()
 		if _, ok := n.probes[k]; ok {
 			// Уже знаем этот адрес — НЕ обновляем added и не сбрасываем backoff.
@@ -374,14 +404,18 @@ func (e *Engine) ProbeCount(tag [relayTagLen]byte) int {
 
 // UseRelay задаёт адрес ретранслятора — общий на все сети (он ведёт таблицу по
 // паре (тег, peerID), а тег у каждой сети свой). Расшифровать он ничего не может.
-func (e *Engine) UseRelay(addr *net.UDPAddr) {
+func (e *Engine) UseRelay(addr netip.AddrPort) {
+	// Нормализуем здесь, а не полагаемся на вызывающего: netToTun сверяет адрес
+	// отправителя с релеем побайтово (src == relay) уже в unmapped-форме, и любой
+	// новый вызывающий, забывший Unmap у себя, тихо сломал бы всю пересылку через
+	// ретранслятор — ни один кадр от него не прошёл бы сверку.
 	e.mu.Lock()
-	e.relay = addr
+	e.relay = netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port())
 	e.mu.Unlock()
 }
 
-// relayAddr отдаёт адрес ретранслятора (nil, если не задан).
-func (e *Engine) relayAddr() *net.UDPAddr {
+// relayAddr отдаёт адрес ретранслятора (пустой AddrPort, если не задан).
+func (e *Engine) relayAddr() netip.AddrPort {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.relay
@@ -580,9 +614,14 @@ func (e *Engine) SyncPeers(tag [relayTagLen]byte, list []proto.PeerInfo) {
 		vip := proto.VirtualIP(id)
 		seen[id] = true
 
-		eps := make([]*net.UDPAddr, 0, len(info.Endpoints))
+		eps := make([]netip.AddrPort, 0, len(info.Endpoints))
 		for _, s := range info.Endpoints {
-			if a, err := net.ResolveUDPAddr("udp4", s); err == nil {
+			// Кандидаты от сигналки — литералы ip:port (их собирает localEndpoints
+			// и STUN), поэтому парсер, а не резолвер: в DNS под локом не ходим.
+			if a, err := netip.ParseAddrPort(s); err == nil {
+				// Список Endpoints пришёл от чужого узла через сигналку — нормализуем
+				// mapped-форму, см. AddProbes.
+				a = netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
 				eps = append(eps, a)
 			}
 		}
@@ -695,14 +734,19 @@ func (e *Engine) tunToNet() error {
 func (e *Engine) netToTun() error {
 	buf := make([]byte, 2048)
 	for {
-		n, src, err := e.conn.ReadFromUDP(buf)
+		n, srcAP, err := e.conn.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			return err
 		}
+		// Нормализация ровно здесь и больше нигде: дальше по коду mapped-адресов
+		// не существует, поэтому сверка с relay, дедуп probes и подтверждение
+		// endpoint'а работают с одной формой. Проверено: v4 через dual-stack сокет
+		// приходит как ::ffff:a.b.c.d, Is4()==false.
+		src := netip.AddrPortFrom(srcAP.Addr().Unmap(), srcAP.Port())
 
 		raw := buf[:n]
 		viaRelay := false
-		if relay := e.relayAddr(); relay != nil && sameAddr(src, relay) {
+		if relay := e.relayAddr(); relay.IsValid() && src == relay {
 			// От ретранслятора приходит либо подтверждение bind, либо кадр в
 			// обёртке — снимаем её и дальше всё как обычно.
 			if len(raw) < 1 {
@@ -802,6 +846,10 @@ func (e *Engine) netToTun() error {
 			// бы решили, что пробились, перестав долбить кандидаты.
 			ps.lastRelayRecv = time.Now()
 		} else {
+			// changed — адрес сменился или подтверждается впервые. Колбэк наружу
+			// (кэш endpoint'ов) дёргаем только на нём, а не на каждом пакете — он
+			// в горячем пути чтения.
+			changed := !ps.active.IsValid() || ps.active != src
 			// Прямой валидный пакет — вот он, итог пробития NAT.
 			ps.active = src
 			ps.lastRecv = time.Now()
@@ -809,6 +857,9 @@ func (e *Engine) netToTun() error {
 			// его в списке, чтобы после молчания было куда перепробиваться.
 			mergeCandidates(ps, []string{src.String()})
 			delete(nw.probes, src.String()) // голый адрес отработал, стал пиром
+			if changed && e.onDirect != nil {
+				e.onDirect(nw.tag, ps.id, src)
+			}
 		}
 		selfName := e.selfName
 		e.mu.Unlock()
@@ -869,6 +920,32 @@ func (e *Engine) netToTun() error {
 				ps.name = name
 				e.mu.Unlock()
 			}
+		case proto.FramePeers:
+			// Транзитивный PEX: пир прислал адреса СВОИХ подтверждённых прямых
+			// пиров. Прямо в общий пул проб — там уже есть дедуп, потолок
+			// maxProbes и отдельная от endpoints очередь. Настоящим пиром адрес
+			// станет только когда придёт кадр, расшифрованный ключом сети, — как
+			// с DHT, PeerID тут ничего не решает.
+			e.mu.RLock()
+			selfCands := append([]string(nil), e.selfCands...)
+			e.mu.RUnlock()
+			pexAddrs := make([]string, 0, maxPexEntries)
+			for _, ap := range decodePeers(payload) {
+				s := ap.String()
+				own := false
+				for _, c := range selfCands {
+					if c == s {
+						own = true // свой же адрес (глазами пира) долбить незачем
+						break
+					}
+				}
+				if !own {
+					pexAddrs = append(pexAddrs, s)
+				}
+			}
+			if len(pexAddrs) > 0 {
+				e.AddProbes(nw.tag, pexAddrs)
+			}
 		}
 	}
 }
@@ -924,22 +1001,31 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 	// задание несёт свою сеть — её ключом шифруем, её тегом заворачиваем в relay.
 	type pingJob struct {
 		n   *network
-		dst *net.UDPAddr // прямой адрес; nil = через ретранслятор
+		dst netip.AddrPort // прямой адрес; пустой = через ретранслятор
 		id  proto.PeerID
 		seq uint64
 	}
 	type punchJob struct {
 		n   *network
-		dst *net.UDPAddr
+		dst netip.AddrPort
 	}
 	type gossipJob struct {
 		n      *network
-		dst    *net.UDPAddr // прямой адрес; nil = через ретранслятор
+		dst    netip.AddrPort // прямой адрес; пустой = через ретранслятор
 		id     proto.PeerID
 		reflex string // адрес пира, каким мы его видим ("" через relay)
 	}
+	// pexJob — рассылка FramePeers. payload общий на всю сеть (список ЕЁ
+	// подтверждённых прямых пиров), поэтому кодируем его раз на сеть, а не на
+	// каждого получателя.
+	type pexJob struct {
+		n       *network
+		dst     netip.AddrPort // прямой адрес; пустой = через ретранслятор
+		id      proto.PeerID
+		payload []byte
+	}
 
-	var lastBind, lastGossip, lastStun time.Time
+	var lastBind, lastGossip, lastPex, lastStun time.Time
 	for {
 		select {
 		case <-done:
@@ -951,10 +1037,12 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 		var pings []pingJob
 		var punches []punchJob
 		var gossips []gossipJob
+		var pexes []pexJob
 		gossipDue := now.Sub(lastGossip) >= addrGossipTick
+		pexDue := now.Sub(lastPex) >= pexGossipTick
 
 		e.mu.Lock()
-		hasRelay := e.relay != nil
+		hasRelay := e.relay.IsValid()
 		hasStun := len(e.stunServers) > 0
 		degraded := false // хоть один пир не на свежем прямом пути → чаще переспрашиваем свой адрес
 		cands := append([]string(nil), e.selfCands...)
@@ -967,6 +1055,24 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 			if nwRelay {
 				netsList = append(netsList, nw)
 			}
+
+			// PEX-полезная нагрузка этой сети: адреса ЕЁ подтверждённых прямых
+			// пиров (не кандидатов и не relay-only — иначе мусор размножается).
+			// Считаем раз на сеть, а не на каждого получателя: рассылка всем её
+			// подтверждённым пирам получает один и тот же список.
+			var pexPayload []byte
+			if pexDue {
+				var direct []netip.AddrPort
+				for _, ps := range nw.peers {
+					if ps.active.IsValid() && now.Sub(ps.lastRecv) < peerTimeout {
+						direct = append(direct, ps.active)
+					}
+				}
+				if len(direct) > 0 {
+					pexPayload = encodePeers(direct)
+				}
+			}
+
 			// Голые адреса от обнаружения (DHT): долбим их пробитием. Ответит только
 			// тот, у кого есть ключ сети, — и станет пиром. Долбим с экспоненциальным
 			// backoff, а не каждый тик: адрес из ПУБЛИЧНОЙ DHT может быть мусором или
@@ -995,12 +1101,12 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 					delete(nw.byIP, ps.virtualIP)
 					continue
 				}
-				confirmed := ps.active != nil && now.Sub(ps.lastRecv) < peerTimeout
+				confirmed := ps.active.IsValid() && now.Sub(ps.lastRecv) < peerTimeout
 				relayPath := !confirmed && nwRelay && ps.usableRelay(now)
 				// suspect — подтверждённый пир, но давно не слышно: возможно, у него
 				// сменился адрес. Начинаем пробивать кандидаты заново, не дожидаясь
 				// peerTimeout, — иначе без ретранслятора это минута отвала.
-				suspect := ps.active != nil && now.Sub(ps.lastRecv) > staleProbe
+				suspect := ps.active.IsValid() && now.Sub(ps.lastRecv) > staleProbe
 				if !confirmed || suspect || relayPath {
 					degraded = true // путь к этому пиру не идеален — пора освежить свой адрес
 				}
@@ -1013,6 +1119,16 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 						gossips = append(gossips, gossipJob{n: nw, dst: ps.active, reflex: ps.active.String()})
 					} else {
 						gossips = append(gossips, gossipJob{n: nw, id: ps.id}) // через relay reflex не знаем
+					}
+				}
+				// PEX — тем же получателям, что и gossip (подтверждённым прямым и
+				// доступным через relay); содержимое уже отфильтровано выше до
+				// подтверждённых прямых, отдельно от получателей.
+				if pexDue && len(pexPayload) > 0 && (confirmed || relayPath) {
+					if confirmed {
+						pexes = append(pexes, pexJob{n: nw, dst: ps.active, payload: pexPayload})
+					} else {
+						pexes = append(pexes, pexJob{n: nw, id: ps.id, payload: pexPayload})
 					}
 				}
 
@@ -1074,7 +1190,7 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 		for _, p := range pings {
 			var body [8]byte
 			binary.BigEndian.PutUint64(body[:], p.seq)
-			if p.dst != nil {
+			if p.dst.IsValid() {
 				e.writeFrame(p.n, p.dst, proto.FramePing, body[:])
 			} else {
 				e.writeFrameRelay(p.n, p.id, proto.FramePing, body[:])
@@ -1084,7 +1200,7 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 			lastGossip = now
 			for _, g := range gossips {
 				payload := encodeAddr(g.reflex, cands)
-				if g.dst != nil {
+				if g.dst.IsValid() {
 					e.writeFrame(g.n, g.dst, proto.FrameAddr, payload)
 				} else {
 					e.writeFrameRelay(g.n, g.id, proto.FrameAddr, payload)
@@ -1092,11 +1208,24 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 				// Имя шлём тем же тактом: пир, узнанный без сигналки, иначе так и
 				// останется безымянным, а переименование узла не доедет никогда.
 				if selfName != "" {
-					if g.dst != nil {
+					if g.dst.IsValid() {
 						e.writeFrame(g.n, g.dst, proto.FrameHello, []byte(selfName))
 					} else {
 						e.writeFrameRelay(g.n, g.id, proto.FrameHello, []byte(selfName))
 					}
+				}
+			}
+		}
+		if pexDue {
+			// Сбрасываем таймер тика ДАЖЕ если слать было некому/нечего — иначе
+			// pexDue остаётся истинным на каждом тике punchInterval, пока не
+			// появится хоть один подтверждённый пир, которому есть что разослать.
+			lastPex = now
+			for _, p := range pexes {
+				if p.dst.IsValid() {
+					e.writeFrame(p.n, p.dst, proto.FramePeers, p.payload)
+				} else {
+					e.writeFrameRelay(p.n, p.id, proto.FramePeers, p.payload)
 				}
 			}
 		}
@@ -1135,7 +1264,7 @@ func (e *Engine) PeerViews(tag [relayTagLen]byte) []PeerView {
 		v := PeerView{Name: ps.name, VirtualIP: ps.virtualIP.String(), LastSeenMs: -1, RttMs: -1,
 			BytesRx: ps.bytesRx.Load(), BytesTx: ps.bytesTx.Load()}
 		switch {
-		case ps.active != nil && now.Sub(ps.lastRecv) < peerTimeout:
+		case ps.active.IsValid() && now.Sub(ps.lastRecv) < peerTimeout:
 			v.Status = "direct"
 			v.Endpoint = ps.active.String()
 			v.LastSeenMs = now.Sub(ps.lastRecv).Milliseconds()
@@ -1173,7 +1302,7 @@ func (e *Engine) SettledForPolling() bool {
 	now := time.Now()
 	for _, nw := range e.nets {
 		for _, ps := range nw.peers {
-			if ps.active == nil || now.Sub(ps.lastRecv) > staleProbe {
+			if !ps.active.IsValid() || now.Sub(ps.lastRecv) > staleProbe {
 				return false
 			}
 		}
@@ -1190,12 +1319,12 @@ func (e *Engine) sendFrame(ps *peerState, typ byte, payload []byte) {
 	now := time.Now()
 	dst := ps.directAddr(now)
 	n := ps.net
-	relayOK := e.relay != nil && n.useRelay && ps.usableRelay(now)
+	relayOK := e.relay.IsValid() && n.useRelay && ps.usableRelay(now)
 	id := ps.id
 	e.mu.RUnlock()
 
 	switch {
-	case dst != nil:
+	case dst.IsValid():
 		e.writeFrame(n, dst, typ, payload)
 	case relayOK:
 		e.writeFrameRelay(n, id, typ, payload)
@@ -1215,7 +1344,7 @@ func (e *Engine) sendToAll(typ byte, payload []byte) {
 	type job struct {
 		n      *network
 		id     proto.PeerID
-		direct *net.UDPAddr
+		direct netip.AddrPort
 		ps     *peerState
 	}
 	now := time.Now()
@@ -1223,9 +1352,9 @@ func (e *Engine) sendToAll(typ byte, payload []byte) {
 	for _, nw := range e.nets {
 		for _, ps := range nw.peers {
 			switch {
-			case ps.directAddr(now) != nil:
+			case ps.directAddr(now).IsValid():
 				jobs = append(jobs, job{n: nw, direct: ps.active, ps: ps})
-			case e.relay != nil && nw.useRelay && ps.usableRelay(now):
+			case e.relay.IsValid() && nw.useRelay && ps.usableRelay(now):
 				jobs = append(jobs, job{n: nw, id: ps.id, ps: ps})
 			}
 		}
@@ -1233,7 +1362,7 @@ func (e *Engine) sendToAll(typ byte, payload []byte) {
 	e.mu.RUnlock()
 
 	for _, j := range jobs {
-		if j.direct != nil {
+		if j.direct.IsValid() {
 			e.writeFrame(j.n, j.direct, typ, payload)
 		} else {
 			e.writeFrameRelay(j.n, j.id, typ, payload)
@@ -1252,11 +1381,11 @@ func (e *Engine) sendToAll(typ byte, payload []byte) {
 // туда данные, ни разу не уйдя на relay. Статус в панели при этом честно
 // показывает relay (он сверяет lastRecv) — и получается разъезд: «в сети», а
 // трафик в чёрную дыру. Здесь та же проверка, что в PeerViews и maintenance.
-func (ps *peerState) directAddr(now time.Time) *net.UDPAddr {
-	if ps.active != nil && now.Sub(ps.lastRecv) < peerTimeout {
+func (ps *peerState) directAddr(now time.Time) netip.AddrPort {
+	if ps.active.IsValid() && now.Sub(ps.lastRecv) < peerTimeout {
 		return ps.active
 	}
-	return nil
+	return netip.AddrPort{}
 }
 
 // lastHeard — когда пир в последний раз подал признаки жизни любым путём; если
@@ -1281,7 +1410,7 @@ func (ps *peerState) usableRelay(now time.Time) bool {
 	return !ps.firstSeen.IsZero() && now.Sub(ps.firstSeen) >= relayGrace
 }
 
-func (e *Engine) sendPunch(n *network, dst *net.UDPAddr) {
+func (e *Engine) sendPunch(n *network, dst netip.AddrPort) {
 	e.writeFrame(n, dst, proto.FramePunch, nil)
 }
 
@@ -1293,12 +1422,14 @@ func (e *Engine) sendPunch(n *network, dst *net.UDPAddr) {
 // попытки забивало кольцевой буфер диагностики: у пира с парой непробитых
 // соседей все 200 строк оказывались этим мусором, и до настоящих сообщений
 // дело не доходило. Проблемы с путём и так видны по статусу пира.
-func (e *Engine) writeFrame(n *network, dst *net.UDPAddr, typ byte, payload []byte) {
+func (e *Engine) writeFrame(n *network, dst netip.AddrPort, typ byte, payload []byte) {
 	sealed, err := e.seal(n, typ, payload)
 	if err != nil {
 		return
 	}
-	e.conn.WriteToUDP(sealed, dst)
+	// Адрес отдаём как есть, unmapped: отображение в v4-in-v6 для AF_INET6-сокета
+	// делает стандартная библиотека.
+	e.conn.WriteToUDPAddrPort(sealed, dst)
 }
 
 // writeFrameRelay шлёт тот же кадр через ретранслятор, завернув его в
@@ -1306,7 +1437,7 @@ func (e *Engine) writeFrame(n *network, dst *net.UDPAddr, typ byte, payload []by
 // его не расшифрует, ключа сети у него нет.
 func (e *Engine) writeFrameRelay(n *network, dstID proto.PeerID, typ byte, payload []byte) {
 	relay := e.relayAddr()
-	if relay == nil {
+	if !relay.IsValid() {
 		return
 	}
 	sealed, err := e.seal(n, typ, payload)
@@ -1321,7 +1452,7 @@ func (e *Engine) writeFrameRelay(n *network, dstID proto.PeerID, typ byte, paylo
 
 	// Молчим по той же причине, что и writeFrame: ошибка записи тут ничего не
 	// диагностирует, а буфер логов забивает.
-	e.conn.WriteToUDP(pkt, relay)
+	e.conn.WriteToUDPAddrPort(pkt, relay)
 }
 
 // seal собирает и шифрует кадр [тип|selfID|счётчик|payload] ключом сети n.
@@ -1365,20 +1496,18 @@ func (ps *peerState) acceptCounter(c uint64) bool {
 // слать. Тег — сети n; ретранслятор ведёт таблицу по паре (тег, peerID).
 func (e *Engine) sendRelayBind(n *network) {
 	relay := e.relayAddr()
-	if relay == nil {
+	if !relay.IsValid() {
 		return
 	}
 	pkt := make([]byte, 0, 1+relayTagLen+len(e.selfID))
 	pkt = append(pkt, relayBind)
 	pkt = append(pkt, n.tag[:]...)
 	pkt = append(pkt, e.selfID[:]...)
-	e.conn.WriteToUDP(pkt, relay)
+	e.conn.WriteToUDPAddrPort(pkt, relay)
 }
 
-// sameAddr сравнивает UDP-адреса по значению (указатели тут разные всегда).
-func sameAddr(a, b *net.UDPAddr) bool {
-	return a != nil && b != nil && a.Port == b.Port && a.IP.Equal(b.IP)
-}
+// sameAddr больше не нужен: netip.AddrPort сравнивается оператором ==, а обе
+// стороны нормализованы Unmap на чтении из сокета.
 
 // --- обмен адресами (FrameAddr) ---------------------------------------------
 
@@ -1413,14 +1542,14 @@ func (e *Engine) handleAddr(ps *peerState, reflex string, cands []string) {
 // mergeEndpoints объединяет свежий список кандидатов от сигналки с уже известными
 // (в т.ч. добытыми P2P-гостипом), без дублей и не длиннее maxCandidates. Свежие идут
 // первыми. Пустой fresh НЕ стирает существующие — сохраняем что было.
-func mergeEndpoints(fresh, existing []*net.UDPAddr) []*net.UDPAddr {
+func mergeEndpoints(fresh, existing []netip.AddrPort) []netip.AddrPort {
 	if len(fresh) == 0 {
 		return existing
 	}
-	out := make([]*net.UDPAddr, 0, maxCandidates)
+	out := make([]netip.AddrPort, 0, maxCandidates)
 	seen := make(map[string]bool, maxCandidates)
-	add := func(a *net.UDPAddr) {
-		if a == nil || len(out) >= maxCandidates {
+	add := func(a netip.AddrPort) {
+		if !a.IsValid() || len(out) >= maxCandidates {
 			return
 		}
 		k := a.String()
@@ -1451,8 +1580,16 @@ func mergeCandidates(ps *peerState, cands []string) {
 		if have[c] {
 			continue
 		}
-		a, err := net.ResolveUDPAddr("udp4", c)
-		if err != nil || a.IP == nil || have[a.String()] {
+		// Тоже парсер, а не резолвер: кандидат приходит от пира по сети, ходить
+		// из-за него в DNS под e.mu нельзя (см. AddProbes).
+		a, err := netip.ParseAddrPort(c)
+		if err != nil {
+			continue
+		}
+		// Кандидат прислан чужим пиром кадром FrameAddr — нормализуем mapped-форму
+		// (см. AddProbes), иначе она не схлопнётся в дедупе с unmapped-адресом.
+		a = netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
+		if have[a.String()] {
 			continue
 		}
 		ps.endpoints = append(ps.endpoints, a)
@@ -1512,6 +1649,74 @@ func takeStr(p []byte) (string, []byte, bool) {
 		return "", p, false
 	}
 	return string(p[:n]), p[n:], true
+}
+
+// --- PEX: обмен адресами пиров (FramePeers) ---------------------------------
+
+// encodePeers/decodePeers — тело FramePeers: [count:1], затем count раз
+// [family:1][addr:4|16][port:2 big-endian]. Только адреса, без PeerID — кто
+// окажется за адресом, выяснится при расшифровке ключом сети (см. FramePeers).
+func encodePeers(addrs []netip.AddrPort) []byte {
+	if len(addrs) > maxPexEntries {
+		addrs = addrs[:maxPexEntries]
+	}
+	out := make([]byte, 0, 1+len(addrs)*19)
+	out = append(out, byte(len(addrs)))
+	for _, ap := range addrs {
+		// Без Unmap: сюда приходят только внутренние адреса движка (ps.active),
+		// а инвариант пакета гарантирует, что mapped-формы среди них нет —
+		// нормализация уже сделана на всех входах (см. netToTun/AddProbes).
+		a := ap.Addr()
+		if a.Is4() {
+			b := a.As4()
+			out = append(out, 4)
+			out = append(out, b[:]...)
+		} else {
+			b := a.As16()
+			out = append(out, 6)
+			out = append(out, b[:]...)
+		}
+		out = append(out, byte(ap.Port()>>8), byte(ap.Port()))
+	}
+	return out
+}
+
+func decodePeers(p []byte) []netip.AddrPort {
+	if len(p) < 1 {
+		return nil
+	}
+	n := int(p[0])
+	if n > maxPexEntries {
+		n = maxPexEntries
+	}
+	p = p[1:]
+	var out []netip.AddrPort
+	for i := 0; i < n; i++ {
+		if len(p) < 1 {
+			break
+		}
+		var size int
+		switch p[0] {
+		case 4:
+			size = 4
+		case 6:
+			size = 16
+		default:
+			// Неизвестное семейство: длину записи посчитать нельзя, поэтому
+			// дальше разбирать нечего — выходим, но уже собранное отдаём.
+			return out
+		}
+		if len(p) < 1+size+2 {
+			break
+		}
+		addr, ok := netip.AddrFromSlice(p[1 : 1+size])
+		if ok {
+			port := uint16(p[1+size])<<8 | uint16(p[1+size+1])
+			out = append(out, netip.AddrPortFrom(addr.Unmap(), port))
+		}
+		p = p[1+size+2:]
+	}
+	return out
 }
 
 // --- разбор IPv4 ------------------------------------------------------------

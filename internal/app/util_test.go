@@ -41,13 +41,13 @@ func TestPickExternalUnfreezesOnPortChange(t *testing.T) {
 	const a2 = "1.2.3.4:2000" // живой STUN после смены маппинга
 
 	// Старт: только stunExt, cur==stunExt (как в bringUpNode).
-	got := pickExternal(a1, a1, "", "", "")
+	got := pickExternal(a1, a1, "", "", "", "")
 	if got != a1 {
 		t.Fatalf("на старте ждали %s, получили %s", a1, got)
 	}
 	// Порт сменился: живой STUN=a2, cur всё ещё a1. Должны перейти на a2, а не
 	// залипнуть на стартовом.
-	got = pickExternal(a1, a1, "", "", a2)
+	got = pickExternal(a1, a1, "", "", a2, "")
 	if got != a2 {
 		t.Fatalf("после смены порта ждали %s, получили %s (заморозка не снята)", a2, got)
 	}
@@ -57,7 +57,7 @@ func TestPickExternalUnfreezesOnPortChange(t *testing.T) {
 // стикинес не должен теряться там, где он оправдан.
 func TestPickExternalStableOnConeNAT(t *testing.T) {
 	const a = "5.6.7.8:1111"
-	if got := pickExternal(a, a, "", "", a); got != a {
+	if got := pickExternal(a, a, "", "", a, ""); got != a {
 		t.Fatalf("на cone NAT адрес должен быть стабилен: ждали %s, получили %s", a, got)
 	}
 }
@@ -68,7 +68,31 @@ func TestPickExternalHoldsCurrentWhenStillLive(t *testing.T) {
 	const cur = "9.9.9.9:100"
 	const other = "9.9.9.9:200"
 	// cur всё ещё виден как relay-reflex, а живой STUN показывает другой порт.
-	if got := pickExternal(cur, "9.9.9.9:1", "", cur, other); got != cur {
+	if got := pickExternal(cur, "9.9.9.9:1", "", cur, other, ""); got != cur {
 		t.Fatalf("гистерезис не удержал живой cur: ждали %s, получили %s", cur, got)
+	}
+}
+
+// pickExternal: STUN промолчал — проброшенный адрес единственный источник внешнего.
+func TestPickExternalPortmapWhenStunSilent(t *testing.T) {
+	pm := "203.0.113.5:31337"
+	if got := pickExternal("", "", "", "", "", pm); got != pm {
+		t.Fatalf("без STUN ожидали %s, получили %s", pm, got)
+	}
+}
+
+// pickExternal: симметричный NAT — IP совпал, порт другой — рефлекс врёт, проброс выигрывает.
+func TestPickExternalPortmapBeatsReflexOnSymmetric(t *testing.T) {
+	pm := "203.0.113.5:31337"
+	if got := pickExternal("203.0.113.5:50001", "203.0.113.5:50001", "", "", "203.0.113.5:50002", pm); got != pm {
+		t.Fatalf("ожидали проброшенный %s, получили %s", pm, got)
+	}
+}
+
+// pickExternal: проброса нет — поведение обязано остаться ровно прежним.
+func TestPickExternalUnchangedWithoutPortmap(t *testing.T) {
+	a1, a2 := "203.0.113.5:1", "203.0.113.5:2"
+	if got := pickExternal(a1, a1, "", "", a2, ""); got != a2 {
+		t.Fatalf("без проброса поведение изменилось: %s", got)
 	}
 }
