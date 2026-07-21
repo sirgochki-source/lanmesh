@@ -754,7 +754,13 @@ func (s *Session) bringUpNode() error {
 	// старте. Put дешёвый (память, без диска) — колбэк в горячем пути чтения
 	// не блокирует.
 	engine.OnDirectConfirmed(func(tag [32]byte, id proto.PeerID, addr netip.AddrPort) {
-		s.cache.Put(hex.EncodeToString(tag[:]), id.String(), addr.String())
+		// Кэшируем только маршрутизируемые адреса. Приватный/LAN/CGNAT-адрес пира
+		// работает лишь в этой сессии на той же локалке (там и так есть broadcast-
+		// обнаружение); сохранённый же на 30 дней, он на ЧУЖОЙ сети месяц будет
+		// уходить в пробы к произвольному устройству с тем же адресом в её LAN.
+		if cacheableEndpoint(addr.Addr()) {
+			s.cache.Put(hex.EncodeToString(tag[:]), id.String(), addr.String())
+		}
 	})
 
 	s.mu.Lock()
@@ -1795,6 +1801,27 @@ var (
 // isTunneledIPv6 сообщает, что addr — Teredo или 6to4 (см. комментарий выше).
 func isTunneledIPv6(addr netip.Addr) bool {
 	return ipv6TeredoPrefix.Contains(addr) || ipv6SixToFourPrefix.Contains(addr)
+}
+
+// cgnatPrefix — операторский NAT (RFC 6598): адрес пира из этого диапазона до нас
+// маршрутизируется только в текущей сессии, кэшировать его на будущее бессмысленно.
+var cgnatPrefix = netip.MustParsePrefix("100.64.0.0/10")
+
+// cacheableEndpoint решает, стоит ли запоминать адрес пира между запусками.
+// Годятся только маршрутизируемые адреса: приватный/LAN/CGNAT/link-local работает
+// лишь пока мы в той же локалке, а сохранённый на 30 дней уводит пробы к чужим
+// устройствам на других сетях (см. OnDirectConfirmed). IPv6-туннели отсекаем по
+// той же причине, что и в кандидатах, — путь через чужой релей ненадёжен.
+func cacheableEndpoint(addr netip.Addr) bool {
+	a := addr.Unmap()
+	if !a.IsValid() || a.IsLoopback() || a.IsPrivate() ||
+		a.IsLinkLocalUnicast() || a.IsUnspecified() || cgnatPrefix.Contains(a) {
+		return false
+	}
+	if a.Is6() && isTunneledIPv6(a) {
+		return false
+	}
+	return true
 }
 
 // isEligibleLocalIP решает, годится ли адрес сетевого интерфейса в кандидаты

@@ -36,6 +36,36 @@ func TestIsEligibleLocalIP(t *testing.T) {
 	}
 }
 
+// cacheableEndpoint: в кэш между запусками попадают только маршрутизируемые
+// адреса пира. Приватный/LAN/CGNAT/link-local годятся лишь в текущей сессии на
+// той же локалке; сохранённые, они на чужой сети уводят пробы к посторонним.
+func TestCacheableEndpoint(t *testing.T) {
+	cases := []struct {
+		name string
+		addr string
+		want bool
+	}{
+		{"публичный IPv4", "203.0.113.5", true},
+		{"нативный глобальный IPv6", "2001:db8::1", true},
+		{"приватный 192.168", "192.168.1.10", false},
+		{"приватный 10/8", "10.0.0.7", false},
+		{"CGNAT 100.64/10", "100.64.1.1", false},
+		{"link-local APIPA", "169.254.1.1", false},
+		{"loopback", "127.0.0.1", false},
+		{"IPv6 ULA", "fd00::1", false},
+		{"IPv6 link-local", "fe80::1", false},
+		{"IPv6 Teredo", "2001:0:c614:203:1c1e:3f57:fefd:e42", false},
+		{"IPv4-mapped публичный", "::ffff:203.0.113.5", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := cacheableEndpoint(netip.MustParseAddr(c.addr)); got != c.want {
+				t.Fatalf("cacheableEndpoint(%s) = %v, ожидалось %v", c.addr, got, c.want)
+			}
+		})
+	}
+}
+
 // isTunneledIPv6: точечная проверка границ префиксов Teredo/6to4 — включая
 // первый/последний адрес каждого диапазона и соседние адреса вне него.
 func TestIsTunneledIPv6Boundaries(t *testing.T) {
