@@ -3,7 +3,6 @@ import { RttHistory } from './lib/rtt-history.js';
 import { diffPeers } from './lib/peerdiff.js';
 import { collectPeers } from './lib/collect.js';
 import { dispName, esc } from './lib/sanitize.js';
-import { parseInvite } from './lib/invite.js';
 import { computeRates } from './lib/traffic.js';
 import { srvRow } from './views/settings.js';
 
@@ -143,14 +142,45 @@ document.addEventListener('click', (e) => {
   if (navigator.clipboard) navigator.clipboard.writeText(ip).catch(() => {});
   flashChip('IP ' + ip + ' скопирован');
 });
+// parseInvite — разбор ссылки-приглашения на СЕРВЕРЕ. Своего разборщика здесь
+// нет намеренно: формат описан один раз в internal/invite, им же пользуется
+// консольный клиент (флаг -invite), и вторая реализация на JS однажды разъехалась
+// бы с первой — а расхождение уводит друга в другую сеть, потому что ключ
+// выводится из имени, пароля и режима обнаружения.
+//
+// Недописанная ссылка — не ошибка, а обычное состояние поля: сервер вернёт
+// {error}, и мы просто ничего не подставляем.
+async function parseInvite(link) {
+  if (!link.trim()) return null;
+  try {
+    const r = await postJSON('/api/parseinvite', { link });
+    const j = await r.json();
+    return j.error ? null : j;
+  } catch (e) { return null; }
+}
+
 // Автозаполнение имени сети/пароля из вставленной ссылки-приглашения (делегирование на
 // document, чтобы работать и после перерисовки формы).
+//
+// С задержкой: обработчик висит на каждом вводе символа, а разбор теперь ходит
+// на сервер. Ссылку почти всегда вставляют целиком, поэтому 150мс незаметны, а
+// запрос уходит один вместо одного на букву.
+let inviteTimer = null;
 document.addEventListener('input', (e) => {
   if (e.target.id !== 'f-invite') return;
-  const inv = parseInvite(e.target.value);
-  if (inv.net != null) document.getElementById('f-net').value = inv.net;
-  if (inv.pass != null) document.getElementById('f-pass').value = inv.pass;
-  applyInviteMode(inv);
+  const raw = e.target.value;
+  clearTimeout(inviteTimer);
+  inviteTimer = setTimeout(async () => {
+    const inv = await parseInvite(raw);
+    if (!inv) { applyInviteMode(null); return; }
+    // Через ?. — форму могло перерисовать опросом, пока мы ждали ответ. Раньше
+    // разбор был синхронным прямо в обработчике, и элементы существовали заведомо.
+    const fn = document.getElementById('f-net'), fp = document.getElementById('f-pass');
+    if (!fn || !fp) return;
+    if (inv.net) fn.value = inv.net;
+    if (inv.pass) fp.value = inv.pass;
+    applyInviteMode(inv);
+  }, 150);
 });
 
 // Режим обнаружения задаёт создатель сети, и он вшит в её ключ: приглашение
@@ -211,7 +241,7 @@ document.addEventListener('click', async (e) => {
   }
   if (act === 'add') {
     const fNet = document.getElementById('f-net').value.trim(), fPass = document.getElementById('f-pass').value;
-    const inv = parseInvite(document.getElementById('f-invite').value);
+    const inv = (await parseInvite(document.getElementById('f-invite').value)) || { sigs: [], relay: null, disc: '' };
     // Если поля пустые — используем то, что распознали из вставленной ссылки-приглашения.
     const net = fNet || inv.net || '', pass = fPass || inv.pass || '';
     if (!net || !pass) { flashChip('Нужны имя сети и пароль'); return; }

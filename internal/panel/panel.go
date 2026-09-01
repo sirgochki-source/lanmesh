@@ -154,6 +154,7 @@ func (p *Panel) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/settings", p.guard(p.handleSettings))
 	mux.HandleFunc("/api/setname", p.guard(p.handleSetName))
 	mux.HandleFunc("/api/invite", p.guard(p.handleInvite))
+	mux.HandleFunc("/api/parseinvite", p.guard(p.handleParseInvite))
 }
 
 // Guard оборачивает чужой хендлер той же CSRF-защитой, что и свои. Нужен GUI для

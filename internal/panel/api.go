@@ -523,3 +523,40 @@ func (p *Panel) AddNetwork(name, password, mode string) error {
 	p.cfgMu.Unlock()
 	return nil
 }
+
+// handleParseInvite разбирает ссылку-приглашение и отдаёт её поля фронту.
+//
+// Существует, чтобы разборщик был ОДИН. Формат описан в internal/invite, и до
+// этого эндпоинта у панели была своя копия разбора на JS: две реализации одного
+// формата, которые, разъехавшись, увели бы друга в другую сеть — ключ выводится
+// из имени, пароля и режима обнаружения.
+//
+// POST, а не GET, сознательно: ссылка несёт пароль сети, а в URL он попал бы в
+// журналы запросов и в историю. Тело guard уже ограничивает.
+func (p *Panel) handleParseInvite(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Link string `json:"link"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "bad json"}, http.StatusBadRequest)
+		return
+	}
+	in, err := invite.Parse(req.Link)
+	if err != nil {
+		// Не ошибка HTTP: фронт зовёт это на каждый ввод, и недописанная ссылка —
+		// обычное состояние поля, а не сбой.
+		writeJSON(w, map[string]string{"error": err.Error()}, http.StatusOK)
+		return
+	}
+	sigs := in.Signals
+	if sigs == nil {
+		sigs = []string{} // фронт делает .length — null его уронит
+	}
+	writeJSON(w, map[string]any{
+		"net":   in.Network,
+		"pass":  in.Password,
+		"sigs":  sigs,
+		"relay": in.Relay,     // null = поля не было, "" = явное «без ретранслятора»
+		"disc":  in.Discovery, // "" = не указан, читается как обычные сигналки
+	}, http.StatusOK)
+}
