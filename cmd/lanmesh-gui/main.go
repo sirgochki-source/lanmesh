@@ -19,7 +19,6 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +32,7 @@ import (
 
 	"github.com/sirgochki-source/lanmesh/internal/app"
 	"github.com/sirgochki-source/lanmesh/internal/defaults"
+	"github.com/sirgochki-source/lanmesh/internal/invite"
 	"github.com/sirgochki-source/lanmesh/internal/logbuf"
 )
 
@@ -995,26 +995,23 @@ func handleInvite(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"link": "", "note": "сеть не найдена"}, http.StatusOK)
 		return
 	}
-	q := url.Values{}
-	q.Set("net", name)
-	q.Set("pass", pass)
+	// Формат ссылки живёт в internal/invite — там же его разбирают панель и
+	// консольный клиент (флаг -invite). Держать сборку здесь значило бы иметь две
+	// реализации одного формата, а разъехавшись, они увели бы друга в другую сеть.
+	in := invite.Invite{Network: name, Password: pass, Discovery: disc}
 	if disc == app.DiscoveryDHT || disc == app.DiscoveryDHTRelay {
-		// Режим обнаружения — свойство сети, а не выбор каждого клиента: он вшит в
-		// ключ, поэтому приглашение обязано его нести, иначе друг просто не попадёт
-		// в ту же сеть. Сигналок у такой сети нет; адрес ретранслятора кладём, только
-		// если он ей вообще разрешён.
-		q.Set("disc", disc)
+		// Сигналок у сети без серверов нет; ретранслятор кладём, только если он
+		// ей вообще разрешён.
 		if disc == app.DiscoveryDHTRelay {
-			q.Set("relay", effectiveRelay(c))
+			r := effectiveRelay(c)
+			in.Relay = &r
 		}
 	} else {
-		for _, u := range effectiveSignals(c) {
-			q.Add("sig", u)
-		}
-		q.Set("relay", effectiveRelay(c)) // "" — осознанно «без релея»
+		in.Signals = effectiveSignals(c)
+		r := effectiveRelay(c) // "" — осознанно «без релея»
+		in.Relay = &r
 	}
-	link := "lanmesh://join?" + q.Encode()
-	writeJSON(w, map[string]string{"link": link}, http.StatusOK)
+	writeJSON(w, map[string]string{"link": invite.Build(in)}, http.StatusOK)
 }
 
 // guard закрывает локальный API от браузерной CSRF: /api/* слушает 127.0.0.1, и

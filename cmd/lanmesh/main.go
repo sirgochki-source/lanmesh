@@ -23,6 +23,7 @@ import (
 	"github.com/sirgochki-source/lanmesh/internal/app"
 	"github.com/sirgochki-source/lanmesh/internal/crypto"
 	"github.com/sirgochki-source/lanmesh/internal/defaults"
+	"github.com/sirgochki-source/lanmesh/internal/invite"
 	"github.com/sirgochki-source/lanmesh/internal/logbuf"
 	sig "github.com/sirgochki-source/lanmesh/internal/signal"
 )
@@ -47,7 +48,75 @@ func main() {
 		"вместе с -dht: разрешить сети ретранслятор как запасной путь (иначе непробиваемые пары не соединятся). Должно совпадать у всех участников — режим вшит в ключ сети")
 	printTag := flag.Bool("tag", false, "напечатать тег сети (нужен для GET /logs) и выйти")
 	sendLogs := flag.Bool("sendlogs", true, "слать диагностику на сигналку (читается по -tag через GET /logs)")
+	inviteURL := flag.String("invite", "",
+		"ссылка-приглашение вида lanmesh://join?net=…&pass=… — заполняет имя сети, пароль, "+
+			"сигналки, ретранслятор и режим обнаружения. Явно заданные флаги важнее ссылки")
 	flag.Parse()
+
+	// Ссылка-приглашение заполняет только то, что НЕ задано флагами явно:
+	// flag.Visit обходит ровно те флаги, которые пользователь написал сам, — так
+	// умолчания (а у -signal и -relay они непустые) не мешают ссылке, а
+	// осознанное «хочу другой ретранслятор» не затирается ею.
+	if *inviteURL != "" {
+		inv, err := invite.Parse(*inviteURL)
+		if err != nil {
+			log.Fatalf("lanmesh: приглашение не разобрано: %v", err)
+		}
+		explicit := map[string]bool{}
+		flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+
+		if !explicit["network"] {
+			*network = inv.Network
+		}
+		if !explicit["password"] {
+			*password = inv.Password
+		}
+		if len(inv.Signals) > 0 && !explicit["signal"] {
+			*signalURLs = strings.Join(inv.Signals, ",")
+		}
+		if inv.Relay != nil && !explicit["relay"] {
+			*relay = *inv.Relay
+		}
+		// Режим обнаружения вшит в ключ сети, поэтому ссылка тут главнее флагов:
+		// выбрать «свой» режим — это войти в другую сеть и не понять почему.
+		switch inv.Discovery {
+		case invite.DiscoveryDHT, invite.DiscoveryDHTRelay:
+			if (explicit["dht"] && !*useDHT) || (explicit["dht-relay"] && *dhtRelay != (inv.Discovery == invite.DiscoveryDHTRelay)) {
+				log.Printf("приглашение задаёт режим %q — флаги -dht/-dht-relay проигнорированы "+
+					"(режим вшит в ключ сети, свой выбор увёл бы в другую сеть)", inv.Discovery)
+			}
+			*useDHT = true
+			*dhtRelay = inv.Discovery == invite.DiscoveryDHTRelay
+		case invite.DiscoverySignal:
+			if explicit["dht"] && *useDHT {
+				log.Printf("приглашение задаёт обычные сигналки — флаг -dht проигнорирован " +
+					"(режим вшит в ключ сети)")
+			}
+			*useDHT, *dhtRelay = false, false
+		}
+
+		// Что именно взято из ссылки — видно сразу, до подключения. Имя сети и
+		// пароль НЕ печатаем: пароль секретен, а имя уходит в лог, который может
+		// уехать на сигналку (см. -sendlogs). Серверы же знать полезно: человек
+		// вставил ссылку из мессенджера и вправе видеть, куда его ведут.
+		applied := []string{}
+		if len(inv.Signals) > 0 && !explicit["signal"] {
+			applied = append(applied, "сигналки: "+strings.Join(inv.Signals, ", "))
+		}
+		if inv.Relay != nil && !explicit["relay"] {
+			if *inv.Relay == "" {
+				applied = append(applied, "ретранслятор: не используется")
+			} else {
+				applied = append(applied, "ретранслятор: "+*inv.Relay)
+			}
+		}
+		if inv.Discovery != "" {
+			applied = append(applied, "обнаружение: "+inv.Discovery)
+		}
+		if len(applied) > 0 {
+			log.Printf("из приглашения — %s", strings.Join(applied, "; "))
+		}
+	}
 
 	if *network == "" || *password == "" {
 		flag.Usage()
