@@ -132,9 +132,10 @@ const (
 
 // network — одна mesh-сеть внутри общего движка: свой ключ (sealer), тег и своя
 // таблица пиров. Сокет, Wintun-адаптер и внешний адрес (STUN/relay/reflex) —
-// общие на все сети, см. Engine. Один физический пир, состоящий сразу в двух
-// наших сетях, попадёт в обе таблицы как отдельный peerState — так проще и
-// корректно (каждый пробьётся со своего, но с общего сокета).
+// общие на все сети, см. Engine.
+//
+// Один физический пир, состоящий сразу в двух наших сетях, попадёт в обе таблицы
+// как отдельный peerState — но ФИЗИЧЕСКИЙ путь до него у них общий, см. peerPath.
 type network struct {
 	tag    [relayTagLen]byte
 	sealer *crypto.Sealer
@@ -169,15 +170,26 @@ type probeAddr struct {
 	lastPoke time.Time // когда долбили в последний раз
 }
 
-type peerState struct {
-	net       *network // сеть, которой принадлежит пир (её ключом шифруем трафик к нему)
-	id        proto.PeerID
-	name      string
-	// learned — пир создан из входящего кадра, а не из ответа сигналки. Такого
-	// сигналка не «ведёт»: чистит его по молчанию maintenance (learnedExpire).
-	learned bool
-	virtualIP netip.Addr
-	endpoints []netip.AddrPort // кандидаты (STUN + локальные)
+// peerPath — ФИЗИЧЕСКИЙ путь до пира: наш единственный сокет ↔ его endpoint.
+// Один на PeerID, ОБЩИЙ для всех сетей, в которых мы состоим вместе с этим пиром.
+//
+// Почему общий. Пробитие NAT, кандидаты, подтверждённый адрес, живость и RTT —
+// свойства пары «мы↔пир», а не сети: ключ шифрования у сетей разный, но 4-кортеж
+// UDP один и тот же. Пока путь лежал в peerState (своём на сеть), пир в N общих
+// сетях получал N независимых циклов: N ping раз в 5с, N залпов punch раз в 2с по
+// каждому кандидату и N рассылок FrameAddr с ОДНИМ И ТЕМ ЖЕ содержимым. При трёх
+// общих сетях и десятке кандидатов это десятки лишних пакетов в секунду в одну и
+// ту же дырку.
+//
+// Что осталось посетевым и почему — см. peerState.
+//
+// refs — сколько peerState на него ссылаются. Путь живёт, пока в НЕКОТОРОЙ сети
+// есть этот пир: выход из одной общей сети не должен рвать соединение в другой.
+// Все поля под e.mu.
+type peerPath struct {
+	refs int
+
+	endpoints []netip.AddrPort // кандидаты (STUN + локальные + госсип)
 	active    netip.AddrPort   // подтверждён по входящему пакету — ТОЛЬКО прямой путь
 	lastRecv  time.Time        // когда пришёл прямой пакет
 	firstSeen time.Time        // когда узнали о пире — от него отсчитываем relayGrace
@@ -187,28 +199,52 @@ type peerState struct {
 	// данные в никуда.
 	lastRelayRecv time.Time
 
+	// Замер задержки. pingAt — момент отправки ping с номером pingSeq; обнуляется
+	// при получении ответа. Время только локальное (монотонное), часы пиров не
+	// участвуют. Меряется один раз на путь и показывается во всех сетях: задержка
+	// у них физически одна.
+	pingSeq  uint64
+	pingAt   time.Time
+	pingSent time.Time
+	rtt      time.Duration // 0 = ещё не измерен
+	rttAt    time.Time     // когда измерен — чтобы не показывать протухший
+}
+
+// peerState — членство конкретного пира в КОНКРЕТНОЙ сети. Всё, что зависит от
+// ключа сети, живёт здесь; всё, что зависит только от пути, — в peerPath.
+type peerState struct {
+	net  *network  // сеть, которой принадлежит пир (её ключом шифруем трафик к нему)
+	path *peerPath // общий путь до этого PeerID, см. acquirePath
+	id   proto.PeerID
+	name string
+	// learned — пир создан из входящего кадра, а не из ответа сигналки. Такого
+	// сигналка не «ведёт»: чистит его по молчанию maintenance (learnedExpire).
+	learned   bool
+	virtualIP netip.Addr
+
+	// lastNetRecv — когда последний раз пришёл кадр, запечатанный ключом ИМЕННО
+	// ЭТОЙ сети. Отдельно от path.lastRecv сознательно: существование learned-пира
+	// в сети доказывается только владением её ключом, и чистить его по общей
+	// живости пути нельзя — ушедший из сети пир висел бы «живым» ровно столько,
+	// сколько мы общаемся с ним в любой ДРУГОЙ общей сети. Заодно по этому полю
+	// выбирается сеть-носитель для служебных кадров (см. maintenance).
+	lastNetRecv time.Time
+
 	// absentSince — когда пир пропал из ответа сигналки; ноль = он там есть.
 	// Нужен, чтобы не сносить пира по одной осечке сигналки, см. SyncPeers.
 	absentSince time.Time
 
 	// Anti-replay: скользящее окно принятых счётчиков этого отправителя. recvMax —
 	// наибольший принятый счётчик, recvBits — битовая маска последних 64 (бит i =
-	// принят ли recvMax-i). См. acceptCounter.
+	// принят ли recvMax-i). См. acceptCounter. Посетевое: счётчик отправителя
+	// растёт в его network.sendCtr, у каждой сети свой.
 	recvMax  uint64
 	recvBits uint64
 
-	// Замер задержки. pingAt — момент отправки ping с номером pingSeq; обнуляется
-	// при получении ответа. Время только локальное (монотонное), часы пиров не
-	// участвуют.
-	pingSeq  uint64
-	pingAt   time.Time
-	pingSent time.Time
-	rtt      time.Duration // 0 = ещё не измерен
-	rttAt    time.Time     // когда измерен — чтобы не показывать протухший
-
 	// Счётчики данных (FrameData/FrameBroadcast): всего отправлено пиру / принято
-	// от него, байт полезной нагрузки. Атомарные — обновляются в горячих путях
-	// send/recv без общего лока движка (см. sendFrame/sendToAll/netToTun).
+	// от него, байт полезной нагрузки. Посетевые — панель показывает трафик сети.
+	// Атомарные: обновляются в горячих путях send/recv без общего лока движка
+	// (см. sendFrame/sendToAll/netToTun).
 	bytesTx atomic.Uint64
 	bytesRx atomic.Uint64
 }
@@ -232,6 +268,11 @@ type Engine struct {
 
 	mu   sync.RWMutex
 	nets map[[relayTagLen]byte]*network // сети по тегу
+
+	// paths — физические пути до пиров, по PeerID и БЕЗ привязки к сети: пир,
+	// состоящий с нами в нескольких сетях, имеет один путь на всех. Живёт по
+	// счёту ссылок из peerState, см. acquirePath/releasePath.
+	paths map[proto.PeerID]*peerPath
 
 	// Обмен адресами напрямую (FrameAddr), см. addrGossipTick.
 	selfCands  []string      // наши кандидаты для рассылки пирам; ставит app.Session
@@ -266,7 +307,35 @@ func NewEngine(conn *net.UDPConn, tun TUN, selfID proto.PeerID, selfIP netip.Add
 		selfID: selfID,
 		selfIP: selfIP,
 		nets:   make(map[[relayTagLen]byte]*network),
+		paths:  make(map[proto.PeerID]*peerPath),
 	}
+}
+
+// acquirePath выдаёт общий путь до пира id, создавая его при первом обращении, и
+// увеличивает счёт ссылок. Вызывать под e.mu.Lock, ровно один раз на каждый
+// созданный peerState.
+func (e *Engine) acquirePath(id proto.PeerID, now time.Time) *peerPath {
+	p := e.paths[id]
+	if p == nil {
+		p = &peerPath{firstSeen: now}
+		e.paths[id] = p
+	}
+	p.refs++
+	return p
+}
+
+// releasePath снимает ссылку peerState с общего пути и удаляет путь, когда ссылок
+// не осталось. Вызывать под e.mu.Lock ровно один раз на каждый удаляемый
+// peerState — иначе путь либо утечёт, либо будет снесён из-под живой сети.
+func (e *Engine) releasePath(ps *peerState) {
+	if ps == nil || ps.path == nil {
+		return
+	}
+	ps.path.refs--
+	if ps.path.refs <= 0 {
+		delete(e.paths, ps.id)
+	}
+	ps.path = nil
 }
 
 // AddNetwork подключает сеть с разрешённым ретранслятором (обычный случай). Тонкая
@@ -306,8 +375,17 @@ func (e *Engine) AddNetworkRelay(tag [relayTagLen]byte, sealer *crypto.Sealer, n
 }
 
 // RemoveNetwork отключает сеть по тегу вместе с её таблицей пиров.
+//
+// Ссылки на общие пути снимаются поимённо: путь до пира, с которым мы состоим ещё
+// в одной сети, обязан пережить выход из этой — иначе отключение одной сети рвало
+// бы живое соединение в другой (см. характеризационный тест).
 func (e *Engine) RemoveNetwork(tag [relayTagLen]byte) {
 	e.mu.Lock()
+	if n := e.nets[tag]; n != nil {
+		for _, ps := range n.peers {
+			e.releasePath(ps)
+		}
+	}
 	delete(e.nets, tag)
 	e.mu.Unlock()
 }
@@ -628,9 +706,12 @@ func (e *Engine) SyncPeers(tag [relayTagLen]byte, list []proto.PeerInfo) {
 
 		ps := n.peers[id]
 		if ps == nil {
-			// firstSeen — точка отсчёта relayGrace: сколько даём на честное
-			// пробитие, прежде чем идти в обход через ретранслятор.
-			ps = &peerState{net: n, id: id, firstSeen: now}
+			// path.firstSeen — точка отсчёта relayGrace: сколько даём на честное
+			// пробитие, прежде чем идти в обход через ретранслятор. Лежит в пути,
+			// а не в членстве: вход в ВТОРУЮ общую сеть с уже знакомым пиром не
+			// должен заново отсчитывать отсрочку по релею.
+			ps = &peerState{net: n, id: id}
+			ps.path = e.acquirePath(id, now)
 			n.peers[id] = ps
 		}
 		// Пир подтверждён сигналкой — он больше НЕ «learned». Если он был впервые
@@ -646,7 +727,7 @@ func (e *Engine) SyncPeers(tag [relayTagLen]byte, list []proto.PeerInfo) {
 		// хранилища на сервере (пир виден, но Endpoints пуст) иначе стёр бы и
 		// P2P-кандидаты от гостипа — единственный рабочий путь при symmetric NAT.
 		// Свежий список от сигналки идёт первым, прежние адреса добираются следом.
-		ps.endpoints = mergeEndpoints(eps, ps.endpoints)
+		ps.path.endpoints = mergeEndpoints(eps, ps.path.endpoints)
 		n.byIP[vip] = ps
 	}
 
@@ -661,7 +742,7 @@ func (e *Engine) SyncPeers(tag [relayTagLen]byte, list []proto.PeerInfo) {
 		// одному участнику перестать регистрироваться (перешёл в режим без
 		// сигналки, ушёл в оффлайн-режим обнаружения) — и остальные сносили ему
 		// РАБОЧЕЕ соединение через 90с, хотя пакеты от него шли всё это время.
-		if now.Sub(ps.lastHeard()) < peerForget {
+		if now.Sub(ps.path.lastHeard()) < peerForget {
 			continue
 		}
 		if ps.absentSince.IsZero() {
@@ -671,6 +752,7 @@ func (e *Engine) SyncPeers(tag [relayTagLen]byte, list []proto.PeerInfo) {
 		if now.Sub(ps.absentSince) >= peerForget {
 			delete(n.byIP, ps.virtualIP)
 			delete(n.peers, id)
+			e.releasePath(ps)
 		}
 	}
 }
@@ -840,22 +922,26 @@ func (e *Engine) netToTun() error {
 			e.mu.Unlock()
 			continue // повтор/устаревший кадр (anti-replay) — молча дропаем
 		}
+		// Кадр расшифровался ключом ИМЕННО этой сети — только это доказывает, что
+		// пир всё ещё в ней состоит. Отмечаем до ветвления: через релей или напрямую
+		// пришёл кадр, для членства безразлично (см. peerState.lastNetRecv).
+		ps.lastNetRecv = time.Now()
 		if viaRelay {
 			// Через ретранслятор: пир жив, но прямая дырка НЕ пробита.
 			// Записать src в active было бы ошибкой — это адрес relay, и мы
 			// бы решили, что пробились, перестав долбить кандидаты.
-			ps.lastRelayRecv = time.Now()
+			ps.path.lastRelayRecv = time.Now()
 		} else {
 			// changed — адрес сменился или подтверждается впервые. Колбэк наружу
 			// (кэш endpoint'ов) дёргаем только на нём, а не на каждом пакете — он
 			// в горячем пути чтения.
-			changed := !ps.active.IsValid() || ps.active != src
+			changed := !ps.path.active.IsValid() || ps.path.active != src
 			// Прямой валидный пакет — вот он, итог пробития NAT.
-			ps.active = src
-			ps.lastRecv = time.Now()
+			ps.path.active = src
+			ps.path.lastRecv = time.Now()
 			// Адрес, с которого пир до нас достучался, — рабочий кандидат: держим
 			// его в списке, чтобы после молчания было куда перепробиваться.
-			mergeCandidates(ps, []string{src.String()})
+			mergeCandidates(ps.path, []string{src.String()})
 			delete(nw.probes, src.String()) // голый адрес отработал, стал пиром
 			if changed && e.onDirect != nil {
 				e.onDirect(nw.tag, ps.id, src)
@@ -969,7 +1055,8 @@ func (e *Engine) learnPeerLocked(n *network, id proto.PeerID) *peerState {
 		return nil
 	}
 	vip := proto.VirtualIP(id)
-	ps := &peerState{net: n, id: id, virtualIP: vip, firstSeen: time.Now(), learned: true}
+	ps := &peerState{net: n, id: id, virtualIP: vip, learned: true}
+	ps.path = e.acquirePath(id, time.Now())
 	n.peers[id] = ps
 	n.byIP[vip] = ps
 	return ps
@@ -980,12 +1067,13 @@ func (e *Engine) learnPeerLocked(n *network, id proto.PeerID) *peerState {
 func (e *Engine) notePong(ps *peerState, seq uint64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if ps.pingAt.IsZero() || ps.pingSeq != seq {
+	p := ps.path
+	if p == nil || p.pingAt.IsZero() || p.pingSeq != seq {
 		return
 	}
-	ps.rtt = time.Since(ps.pingAt)
-	ps.rttAt = time.Now()
-	ps.pingAt = time.Time{}
+	p.rtt = time.Since(p.pingAt)
+	p.rttAt = time.Now()
+	p.pingAt = time.Time{}
 }
 
 // maintenance периодически пробивает NAT и пингует подтверждённых пиров.
@@ -1024,6 +1112,20 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 		id      proto.PeerID
 		payload []byte
 	}
+	// pathWork — работа по ОДНОМУ физическому пути за тик, собранная со всех
+	// сетей, в которых у нас есть этот пир. carrier — сеть, чьим ключом шлём
+	// прямые служебные кадры; relayNet — сеть для кадров через ретранслятор (ей
+	// он должен быть разрешён). Обе выбираются по свежести lastNetRecv: сеть, где
+	// пира слышали позже, заведомо ещё содержит его, а протухшая запись сигналки
+	// увела бы служебный трафик в сеть, из которой пир давно вышел.
+	type pathWork struct {
+		path        *peerPath
+		id          proto.PeerID
+		carrier     *network
+		carrierSeen time.Time
+		relayNet    *network
+		relaySeen   time.Time
+	}
 
 	var lastBind, lastGossip, lastPex, lastStun time.Time
 	for {
@@ -1038,6 +1140,7 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 		var punches []punchJob
 		var gossips []gossipJob
 		var pexes []pexJob
+		works := map[proto.PeerID]*pathWork{} // заново на каждый тик
 		gossipDue := now.Sub(lastGossip) >= addrGossipTick
 		pexDue := now.Sub(lastPex) >= pexGossipTick
 
@@ -1064,8 +1167,8 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 			if pexDue {
 				var direct []netip.AddrPort
 				for _, ps := range nw.peers {
-					if ps.active.IsValid() && now.Sub(ps.lastRecv) < peerTimeout {
-						direct = append(direct, ps.active)
+					if ps.path.active.IsValid() && now.Sub(ps.path.lastRecv) < peerTimeout {
+						direct = append(direct, ps.path.active)
 					}
 				}
 				if len(direct) > 0 {
@@ -1096,70 +1199,102 @@ func (e *Engine) maintenance(done <-chan struct{}) {
 				// Пира, узнанного из трафика, никто не «ведёт»: сигналка про него не
 				// знает, а в DHT-режиме её и нет. Замолчал надолго — забываем сами,
 				// иначе таблица растёт от каждого случайного контакта.
-				if ps.learned && now.Sub(ps.lastHeard()) >= learnedExpire {
+				//
+				// Молчание считаем ПО ЭТОЙ СЕТИ (lastHeardIn), а не по общей живости
+				// пути: членство learned-пира доказывается только кадром, открытым её
+				// ключом. По общему пути ушедший из сети пир висел бы в ней живым
+				// ровно столько, сколько мы общаемся с ним в любой ДРУГОЙ общей сети.
+				if ps.learned && now.Sub(ps.lastHeardIn()) >= learnedExpire {
 					delete(nw.peers, id)
 					delete(nw.byIP, ps.virtualIP)
+					e.releasePath(ps)
 					continue
 				}
-				confirmed := ps.active.IsValid() && now.Sub(ps.lastRecv) < peerTimeout
-				relayPath := !confirmed && nwRelay && ps.usableRelay(now)
-				// suspect — подтверждённый пир, но давно не слышно: возможно, у него
-				// сменился адрес. Начинаем пробивать кандидаты заново, не дожидаясь
-				// peerTimeout, — иначе без ретранслятора это минута отвала.
-				suspect := ps.active.IsValid() && now.Sub(ps.lastRecv) > staleProbe
-				if !confirmed || suspect || relayPath {
-					degraded = true // путь к этому пиру не идеален — пора освежить свой адрес
-				}
+				p := ps.path
+				confirmed := p.active.IsValid() && now.Sub(p.lastRecv) < peerTimeout
+				relayPath := !confirmed && nwRelay && p.usableRelay(now)
 
-				// Gossip считаем ДО пинг-ветки: иначе её `continue` (когда пинг слали
-				// недавно) проглатывал бы рассылку кандидатов, а lastGossip всё равно
-				// сбрасывался — и обмен адресами растягивался вдвое против addrGossipTick.
-				if gossipDue && len(cands) > 0 && (confirmed || relayPath) {
-					if confirmed {
-						gossips = append(gossips, gossipJob{n: nw, dst: ps.active, reflex: ps.active.String()})
-					} else {
-						gossips = append(gossips, gossipJob{n: nw, id: ps.id}) // через relay reflex не знаем
-					}
-				}
-				// PEX — тем же получателям, что и gossip (подтверждённым прямым и
-				// доступным через relay); содержимое уже отфильтровано выше до
-				// подтверждённых прямых, отдельно от получателей.
+				// PEX остаётся посетевым: его содержимое — список подтверждённых
+				// пиров ИМЕННО этой сети, у каждой он свой, схлопнуть нельзя.
 				if pexDue && len(pexPayload) > 0 && (confirmed || relayPath) {
 					if confirmed {
-						pexes = append(pexes, pexJob{n: nw, dst: ps.active, payload: pexPayload})
+						pexes = append(pexes, pexJob{n: nw, dst: p.active, payload: pexPayload})
 					} else {
 						pexes = append(pexes, pexJob{n: nw, id: ps.id, payload: pexPayload})
 					}
 				}
 
-				if confirmed || relayPath {
-					// Пингуем по тому пути, которым реально ходим: так RTT честно
-					// показывает задержку рабочего маршрута, а не выдуманного.
-					if now.Sub(ps.pingSent) < pingInterval {
-						// ...но кандидаты долбить не перестаём, пока путь не надёжен.
-						if !confirmed || suspect {
-							for _, ep := range ps.endpoints {
-								punches = append(punches, punchJob{n: nw, dst: ep})
-							}
-						}
-						continue
-					}
-					ps.pingSeq++
-					ps.pingAt = now
-					ps.pingSent = now
-					if confirmed {
-						pings = append(pings, pingJob{n: nw, dst: ps.active, seq: ps.pingSeq})
-					} else {
-						pings = append(pings, pingJob{n: nw, id: ps.id, seq: ps.pingSeq})
-					}
+				// Всё остальное (ping, пробитие, госсип своих адресов) — свойство
+				// ПУТИ, а не сети: копим по PeerID и разошлём один раз. Носителем
+				// берём сеть, в которой слышали пира позже всех, — она заведомо
+				// живая; для пути через релей нужна ещё и сеть, кому релей разрешён.
+				w := works[id]
+				if w == nil {
+					w = &pathWork{path: p, id: id}
+					works[id] = w
 				}
-				if !confirmed || suspect {
-					// Прямой путь не открыт ИЛИ подтверждённый вдруг замолчал: долбим
-					// ВСЕ кандидаты одновременно — встречные пакеты открывают дырку в
-					// обоих NAT, и это же ловит смену адреса без ретранслятора.
-					for _, ep := range ps.endpoints {
-						punches = append(punches, punchJob{n: nw, dst: ep})
+				if w.carrier == nil || ps.lastNetRecv.After(w.carrierSeen) {
+					w.carrier, w.carrierSeen = nw, ps.lastNetRecv
+				}
+				if nwRelay && (w.relayNet == nil || ps.lastNetRecv.After(w.relaySeen)) {
+					w.relayNet, w.relaySeen = nw, ps.lastNetRecv
+				}
+			}
+		}
+
+		// Второй проход — по ПУТЯМ. Здесь то, что физически одно на пира, сколько
+		// бы общих сетей с ним ни было: раньше этот блок жил внутри цикла по сетям
+		// и множил ping/punch/gossip на их число, долбя одну и ту же дырку.
+		for _, w := range works {
+			p := w.path
+			confirmed := p.active.IsValid() && now.Sub(p.lastRecv) < peerTimeout
+			relayPath := !confirmed && w.relayNet != nil && p.usableRelay(now)
+			// suspect — подтверждённый пир, но давно не слышно: возможно, у него
+			// сменился адрес. Начинаем пробивать кандидаты заново, не дожидаясь
+			// peerTimeout, — иначе без ретранслятора это минута отвала.
+			suspect := p.active.IsValid() && now.Sub(p.lastRecv) > staleProbe
+			if !confirmed || suspect || relayPath {
+				degraded = true // путь к этому пиру не идеален — пора освежить свой адрес
+			}
+
+			// Gossip считаем ДО пинг-ветки: иначе её `continue` (когда пинг слали
+			// недавно) проглатывал бы рассылку кандидатов, а lastGossip всё равно
+			// сбрасывался — и обмен адресами растягивался вдвое против addrGossipTick.
+			if gossipDue && len(cands) > 0 && (confirmed || relayPath) {
+				if confirmed {
+					gossips = append(gossips, gossipJob{n: w.carrier, dst: p.active, reflex: p.active.String()})
+				} else {
+					gossips = append(gossips, gossipJob{n: w.relayNet, id: w.id}) // через relay reflex не знаем
+				}
+			}
+
+			if confirmed || relayPath {
+				// Пингуем по тому пути, которым реально ходим: так RTT честно
+				// показывает задержку рабочего маршрута, а не выдуманного.
+				if now.Sub(p.pingSent) < pingInterval {
+					// ...но кандидаты долбить не перестаём, пока путь не надёжен.
+					if !confirmed || suspect {
+						for _, ep := range p.endpoints {
+							punches = append(punches, punchJob{n: w.carrier, dst: ep})
+						}
 					}
+					continue
+				}
+				p.pingSeq++
+				p.pingAt = now
+				p.pingSent = now
+				if confirmed {
+					pings = append(pings, pingJob{n: w.carrier, dst: p.active, seq: p.pingSeq})
+				} else {
+					pings = append(pings, pingJob{n: w.relayNet, id: w.id, seq: p.pingSeq})
+				}
+			}
+			if !confirmed || suspect {
+				// Прямой путь не открыт ИЛИ подтверждённый вдруг замолчал: долбим
+				// ВСЕ кандидаты одновременно — встречные пакеты открывают дырку в
+				// обоих NAT, и это же ловит смену адреса без ретранслятора.
+				for _, ep := range p.endpoints {
+					punches = append(punches, punchJob{n: w.carrier, dst: ep})
 				}
 			}
 		}
@@ -1261,17 +1396,23 @@ func (e *Engine) PeerViews(tag [relayTagLen]byte) []PeerView {
 	now := time.Now()
 	out := make([]PeerView, 0, len(n.peers))
 	for _, ps := range n.peers {
+		p := ps.path
 		v := PeerView{Name: ps.name, VirtualIP: ps.virtualIP.String(), LastSeenMs: -1, RttMs: -1,
 			BytesRx: ps.bytesRx.Load(), BytesTx: ps.bytesTx.Load()}
 		switch {
-		case ps.active.IsValid() && now.Sub(ps.lastRecv) < peerTimeout:
+		case p.active.IsValid() && now.Sub(p.lastRecv) < peerTimeout:
 			v.Status = "direct"
-			v.Endpoint = ps.active.String()
-			v.LastSeenMs = now.Sub(ps.lastRecv).Milliseconds()
-		case !ps.lastRelayRecv.IsZero() && now.Sub(ps.lastRelayRecv) < peerTimeout:
+			v.Endpoint = p.active.String()
+			v.LastSeenMs = now.Sub(p.lastRecv).Milliseconds()
+		case n.useRelay && !p.lastRelayRecv.IsZero() && now.Sub(p.lastRelayRecv) < peerTimeout:
 			// Прямо не пробились, но через ретранслятор пир отвечает.
+			//
+			// n.useRelay в условии обязателен с тех пор, как путь стал общим:
+			// живость через релей могла прийти из ДРУГОЙ общей сети, а сеть «без
+			// серверов» не должна показывать статус relay — она релеем не
+			// пользуется, и для неё этот пир либо прямой, либо ещё ищется.
 			v.Status = "relay"
-			v.LastSeenMs = now.Sub(ps.lastRelayRecv).Milliseconds()
+			v.LastSeenMs = now.Sub(p.lastRelayRecv).Milliseconds()
 		default:
 			v.Status = "connecting"
 		}
@@ -1281,8 +1422,8 @@ func (e *Engine) PeerViews(tag [relayTagLen]byte) []PeerView {
 			// и честный замер выходит ровно нулевым. Проверка на >0 прятала бы
 			// как раз самые быстрые соединения.
 			// Протухший замер не показываем: лучше «—», чем цифра из прошлого.
-			if !ps.rttAt.IsZero() && now.Sub(ps.rttAt) < rttStale {
-				v.RttMs = float64(ps.rtt.Microseconds()) / 1000
+			if !p.rttAt.IsZero() && now.Sub(p.rttAt) < rttStale {
+				v.RttMs = float64(p.rtt.Microseconds()) / 1000
 			}
 		}
 		out = append(out, v)
@@ -1300,11 +1441,9 @@ func (e *Engine) SettledForPolling() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	now := time.Now()
-	for _, nw := range e.nets {
-		for _, ps := range nw.peers {
-			if !ps.active.IsValid() || now.Sub(ps.lastRecv) > staleProbe {
-				return false
-			}
+	for _, p := range e.paths {
+		if !p.active.IsValid() || now.Sub(p.lastRecv) > staleProbe {
+			return false
 		}
 	}
 	return true
@@ -1317,9 +1456,9 @@ func (e *Engine) SettledForPolling() bool {
 func (e *Engine) sendFrame(ps *peerState, typ byte, payload []byte) {
 	e.mu.RLock()
 	now := time.Now()
-	dst := ps.directAddr(now)
+	dst := ps.path.directAddr(now)
 	n := ps.net
-	relayOK := e.relay.IsValid() && n.useRelay && ps.usableRelay(now)
+	relayOK := e.relay.IsValid() && n.useRelay && ps.path.usableRelay(now)
 	id := ps.id
 	e.mu.RUnlock()
 
@@ -1352,9 +1491,9 @@ func (e *Engine) sendToAll(typ byte, payload []byte) {
 	for _, nw := range e.nets {
 		for _, ps := range nw.peers {
 			switch {
-			case ps.directAddr(now).IsValid():
-				jobs = append(jobs, job{n: nw, direct: ps.active, ps: ps})
-			case e.relay.IsValid() && nw.useRelay && ps.usableRelay(now):
+			case ps.path.directAddr(now).IsValid():
+				jobs = append(jobs, job{n: nw, direct: ps.path.active, ps: ps})
+			case e.relay.IsValid() && nw.useRelay && ps.path.usableRelay(now):
 				jobs = append(jobs, job{n: nw, id: ps.id, ps: ps})
 			}
 		}
@@ -1381,24 +1520,35 @@ func (e *Engine) sendToAll(typ byte, payload []byte) {
 // туда данные, ни разу не уйдя на relay. Статус в панели при этом честно
 // показывает relay (он сверяет lastRecv) — и получается разъезд: «в сети», а
 // трафик в чёрную дыру. Здесь та же проверка, что в PeerViews и maintenance.
-func (ps *peerState) directAddr(now time.Time) netip.AddrPort {
-	if ps.active.IsValid() && now.Sub(ps.lastRecv) < peerTimeout {
-		return ps.active
+func (p *peerPath) directAddr(now time.Time) netip.AddrPort {
+	if p.active.IsValid() && now.Sub(p.lastRecv) < peerTimeout {
+		return p.active
 	}
 	return netip.AddrPort{}
 }
 
 // lastHeard — когда пир в последний раз подал признаки жизни любым путём; если
 // не подавал вовсе, отсчитываем от знакомства. Вызывать под локом.
-func (ps *peerState) lastHeard() time.Time {
-	last := ps.lastRecv
-	if ps.lastRelayRecv.After(last) {
-		last = ps.lastRelayRecv
+func (p *peerPath) lastHeard() time.Time {
+	last := p.lastRecv
+	if p.lastRelayRecv.After(last) {
+		last = p.lastRelayRecv
 	}
 	if last.IsZero() {
-		return ps.firstSeen
+		return p.firstSeen
 	}
 	return last
+}
+
+// lastHeardIn — когда пир подал признак жизни ИМЕННО в этой сети, то есть
+// прислал кадр, открывшийся её ключом. Если не присылал вовсе — отсчитываем от
+// знакомства. Отдельно от peerPath.lastHeard: та говорит про живость пути и
+// общая на все сети, а эта — про членство в конкретной. Вызывать под локом.
+func (ps *peerState) lastHeardIn() time.Time {
+	if !ps.lastNetRecv.IsZero() {
+		return ps.lastNetRecv
+	}
+	return ps.path.firstSeen
 }
 
 // usableRelay — стоит ли слать пиру через ретранслятор. Вызывать под локом.
@@ -1406,8 +1556,8 @@ func (ps *peerState) lastHeard() time.Time {
 // Ждём relayGrace от знакомства: прямой путь лучше, и сдаваться раньше времени
 // незачем. Дальше шлём, даже если ответа через relay ещё не было — иначе никто
 // не сделает первый шаг и путь не заработает никогда.
-func (ps *peerState) usableRelay(now time.Time) bool {
-	return !ps.firstSeen.IsZero() && now.Sub(ps.firstSeen) >= relayGrace
+func (p *peerPath) usableRelay(now time.Time) bool {
+	return !p.firstSeen.IsZero() && now.Sub(p.firstSeen) >= relayGrace
 }
 
 func (e *Engine) sendPunch(n *network, dst netip.AddrPort) {
@@ -1523,7 +1673,7 @@ func (e *Engine) handleAddr(ps *peerState, reflex string, cands []string) {
 		e.selfReflex = reflex
 	}
 	if len(cands) > 0 {
-		mergeCandidates(ps, cands)
+		mergeCandidates(ps.path, cands)
 	}
 	ch := e.reflexCh
 	e.mu.Unlock()
@@ -1568,13 +1718,13 @@ func mergeEndpoints(fresh, existing []netip.AddrPort) []netip.AddrPort {
 	return out
 }
 
-func mergeCandidates(ps *peerState, cands []string) {
-	have := make(map[string]bool, len(ps.endpoints))
-	for _, a := range ps.endpoints {
+func mergeCandidates(p *peerPath, cands []string) {
+	have := make(map[string]bool, len(p.endpoints))
+	for _, a := range p.endpoints {
 		have[a.String()] = true
 	}
 	for _, c := range cands {
-		if len(ps.endpoints) >= maxCandidates {
+		if len(p.endpoints) >= maxCandidates {
 			break
 		}
 		if have[c] {
@@ -1592,7 +1742,7 @@ func mergeCandidates(ps *peerState, cands []string) {
 		if have[a.String()] {
 			continue
 		}
-		ps.endpoints = append(ps.endpoints, a)
+		p.endpoints = append(p.endpoints, a)
 		have[a.String()] = true
 	}
 }

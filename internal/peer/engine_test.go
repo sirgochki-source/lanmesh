@@ -118,13 +118,13 @@ func TestPeersPunchAndMeasureRTT(t *testing.T) {
 			a.eng.mu.RLock()
 			for _, ps := range a.eng.nets[testTag].peers {
 				t.Logf("A: seq=%d pingAt=%v pingSent=%v rtt=%v rttAt=%v active=%v",
-					ps.pingSeq, ps.pingAt, ps.pingSent, ps.rtt, ps.rttAt, ps.active)
+					ps.path.pingSeq, ps.path.pingAt, ps.path.pingSent, ps.path.rtt, ps.path.rttAt, ps.path.active)
 			}
 			a.eng.mu.RUnlock()
 			b.eng.mu.RLock()
 			for _, ps := range b.eng.nets[testTag].peers {
 				t.Logf("B: seq=%d pingAt=%v pingSent=%v rtt=%v active=%v",
-					ps.pingSeq, ps.pingAt, ps.pingSent, ps.rtt, ps.active)
+					ps.path.pingSeq, ps.path.pingAt, ps.path.pingSent, ps.path.rtt, ps.path.active)
 			}
 			b.eng.mu.RUnlock()
 			t.Fatalf("не дождались RTT, последнее состояние: %+v", v)
@@ -169,7 +169,7 @@ func TestSignalHiccupDoesNotDropPeer(t *testing.T) {
 	a.eng.mu.RLock()
 	var activeBefore netip.AddrPort
 	for _, ps := range a.eng.nets[testTag].peers {
-		activeBefore = ps.active
+		activeBefore = ps.path.active
 	}
 	a.eng.mu.RUnlock()
 	if !activeBefore.IsValid() {
@@ -191,7 +191,7 @@ func TestSignalHiccupDoesNotDropPeer(t *testing.T) {
 	a.eng.mu.RLock()
 	var activeAfter netip.AddrPort
 	for _, ps := range a.eng.nets[testTag].peers {
-		activeAfter = ps.active
+		activeAfter = ps.path.active
 	}
 	a.eng.mu.RUnlock()
 	if !activeAfter.IsValid() || activeAfter.String() != activeBefore.String() {
@@ -207,8 +207,8 @@ func TestSignalHiccupDoesNotDropPeer(t *testing.T) {
 	a.eng.mu.Lock()
 	for _, ps := range a.eng.nets[testTag].peers {
 		ps.absentSince = time.Now().Add(-peerForget - time.Second)
-		ps.lastRecv = time.Now().Add(-peerForget - time.Second)
-		ps.lastRelayRecv = time.Time{}
+		ps.path.lastRecv = time.Now().Add(-peerForget - time.Second)
+		ps.path.lastRelayRecv = time.Time{}
 	}
 	a.eng.mu.Unlock()
 	a.eng.SyncPeers(testTag, nil)
@@ -260,7 +260,7 @@ func TestMaintenanceStopsWithEngine(t *testing.T) {
 		a.eng.mu.RLock()
 		defer a.eng.mu.RUnlock()
 		for _, ps := range a.eng.nets[testTag].peers {
-			return ps.pingSeq
+			return ps.path.pingSeq
 		}
 		return 0
 	}
@@ -298,8 +298,8 @@ func TestSettledForPolling(t *testing.T) {
 	for _, p := range a.eng.nets[testTag].peers {
 		ps = p
 	}
-	ps.active = netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 1)
-	ps.lastRecv = time.Now()
+	ps.path.active = netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), 1)
+	ps.path.lastRecv = time.Now()
 	a.eng.mu.Unlock()
 	if !a.eng.SettledForPolling() {
 		t.Fatal("свежий прямой путь — должно быть settled")
@@ -307,7 +307,7 @@ func TestSettledForPolling(t *testing.T) {
 
 	// Замолчал дольше staleProbe — снова быстрый темп (для переоткрытия).
 	a.eng.mu.Lock()
-	ps.lastRecv = time.Now().Add(-staleProbe - time.Second)
+	ps.path.lastRecv = time.Now().Add(-staleProbe - time.Second)
 	a.eng.mu.Unlock()
 	if a.eng.SettledForPolling() {
 		t.Fatal("замолчавший подтверждённый пир — не settled")
@@ -348,7 +348,7 @@ func TestHandleAddrReflexAndCandidates(t *testing.T) {
 	for _, p := range a.eng.nets[testTag].peers {
 		ps = p
 	}
-	before := len(ps.endpoints)
+	before := len(ps.path.endpoints)
 	a.eng.mu.RUnlock()
 
 	a.eng.handleAddr(ps, "203.0.113.7:5000", []string{"198.51.100.9:41000"})
@@ -362,7 +362,7 @@ func TestHandleAddrReflexAndCandidates(t *testing.T) {
 		t.Fatal("смена reflex должна будить перерегистрацию")
 	}
 	a.eng.mu.RLock()
-	after := len(ps.endpoints)
+	after := len(ps.path.endpoints)
 	a.eng.mu.RUnlock()
 	if after != before+1 {
 		t.Fatalf("кандидат не долит: было %d, стало %d", before, after)
@@ -384,22 +384,22 @@ func TestNotePongIgnoresWrongSeq(t *testing.T) {
 	n := newNode(t, sealer)
 	defer n.conn.Close()
 
-	ps := &peerState{pingSeq: 7, pingAt: time.Now().Add(-50 * time.Millisecond)}
+	ps := &peerState{path: &peerPath{pingSeq: 7, pingAt: time.Now().Add(-50 * time.Millisecond)}}
 
 	n.eng.notePong(ps, 6) // номер не наш
-	if ps.rtt != 0 {
-		t.Fatalf("чужой номер учтён: rtt=%v", ps.rtt)
+	if ps.path.rtt != 0 {
+		t.Fatalf("чужой номер учтён: rtt=%v", ps.path.rtt)
 	}
 
 	n.eng.notePong(ps, 7) // наш
-	if ps.rtt <= 0 {
-		t.Fatalf("свой номер не учтён: rtt=%v", ps.rtt)
+	if ps.path.rtt <= 0 {
+		t.Fatalf("свой номер не учтён: rtt=%v", ps.path.rtt)
 	}
 
 	// Повтор того же ответа не должен пересчитывать RTT по обнулённому времени.
-	was := ps.rtt
+	was := ps.path.rtt
 	n.eng.notePong(ps, 7)
-	if ps.rtt != was {
-		t.Fatalf("дубль ответа пересчитал RTT: было %v, стало %v", was, ps.rtt)
+	if ps.path.rtt != was {
+		t.Fatalf("дубль ответа пересчитал RTT: было %v, стало %v", was, ps.path.rtt)
 	}
 }

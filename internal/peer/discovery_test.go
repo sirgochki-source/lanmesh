@@ -152,7 +152,7 @@ func TestLivePeerSurvivesAbsenceFromSignal(t *testing.T) {
 	a.eng.mu.Lock()
 	ps := a.eng.nets[testTag].peers[b.id]
 	ps.absentSince = time.Now().Add(-10 * peerForget)
-	ps.lastRecv = time.Now()
+	ps.path.lastRecv = time.Now()
 	a.eng.mu.Unlock()
 
 	a.eng.SyncPeers(testTag, nil) // сигналка его не видит
@@ -162,7 +162,7 @@ func TestLivePeerSurvivesAbsenceFromSignal(t *testing.T) {
 
 	// А вот замолчавшего — забываем, как и раньше.
 	a.eng.mu.Lock()
-	ps.lastRecv = time.Now().Add(-10 * peerForget)
+	ps.path.lastRecv = time.Now().Add(-10 * peerForget)
 	a.eng.mu.Unlock()
 	a.eng.SyncPeers(testTag, nil)
 	if len(a.eng.PeerViews(testTag)) != 0 {

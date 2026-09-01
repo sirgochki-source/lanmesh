@@ -137,7 +137,7 @@ func TestPeersFallBackToRelay(t *testing.T) {
 }
 
 // Протухший прямой путь обязан уводить ДАННЫЕ на ретранслятор, а не в чёрную
-// дыру. Регрессия на баг из боя: sendFrame слал на ps.active, сверяя лишь
+// дыру. Регрессия на баг из боя: sendFrame слал на ps.path.active, сверяя лишь
 // active != nil, без свежести — в отличие от статуса и maintenance. Когда NAT
 // перевешивал порт (у мобильных операторов при переподключении — норма), active
 // торчал на мёртвом адресе: панель честно уходила на relay (она сверяет
@@ -176,9 +176,9 @@ func TestStaleDirectPathRoutesDataViaRelay(t *testing.T) {
 	for _, p := range a.eng.nets[testTag].peers {
 		ps = p
 	}
-	ps.active = dead
-	ps.lastRecv = time.Now().Add(-2 * peerTimeout)
-	ps.firstSeen = time.Now().Add(-2 * relayGrace)
+	ps.path.active = dead
+	ps.path.lastRecv = time.Now().Add(-2 * peerTimeout)
+	ps.path.firstSeen = time.Now().Add(-2 * relayGrace)
 	a.eng.mu.Unlock()
 
 	// Отправляем данные. Протухший active НЕ должен увести пакет в чёрную дыру.
@@ -197,7 +197,7 @@ func TestStaleDirectPathRoutesDataViaRelay(t *testing.T) {
 	// Контроль: со СВЕЖИМ прямым путём данные идут напрямую (в мёртвый адрес),
 	// на relay не прилетает ничего — иначе мы бы гоняли лишний трафик через сервер.
 	a.eng.mu.Lock()
-	ps.lastRecv = time.Now()
+	ps.path.lastRecv = time.Now()
 	a.eng.mu.Unlock()
 	a.eng.sendFrame(ps, proto.FrameData, []byte("payload2"))
 
@@ -240,7 +240,7 @@ func TestRelayPacketDoesNotConfirmDirectPath(t *testing.T) {
 			a.eng.mu.RLock()
 			var active netip.AddrPort
 			for _, ps := range a.eng.nets[testTag].peers {
-				active = ps.active
+				active = ps.path.active
 			}
 			a.eng.mu.RUnlock()
 			if active.IsValid() {
