@@ -1,0 +1,26 @@
+[Unit]
+Description=lanmesh — виртуальная локалка
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Параметры сети (включая пароль) — в отдельном файле с правами 0600, а не в
+# самом юните: юнит читается всеми, пароль сети — нет. Содержимое, например:
+#   LANMESH_ARGS=-network myteam -password hunter2 -port 34567
+EnvironmentFile=/etc/lanmesh/lanmesh.env
+
+# StateDirectory создаёт /var/lib/lanmesh, а XDG_CONFIG_HOME заставляет
+# os.UserConfigDir() вернуть /var/lib — так identity и кэши ложатся в
+# /var/lib/lanmesh, а не в /root/.config, и коду не нужно знать, что он запущен
+# сервисом (см. internal/app/confdir_unix.go).
+Environment=XDG_CONFIG_HOME=/var/lib
+StateDirectory=lanmesh
+
+ExecStart=/usr/local/bin/lanmesh $LANMESH_ARGS
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

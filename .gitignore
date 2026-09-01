@@ -7,11 +7,17 @@ worker/.cf_token
 *.key
 
 # собранные бинарники (пересобираются из исходников)
+# Шаблоны привязаны к корню репозитория и к именам конкретных команд: прежние
+# «*-arm64» и «*-linux-*» ловили что угодно с этими кусками в имени в ЛЮБОЙ
+# папке — на этом молча потерялись docs/.../2026-09-01-linux-port-design.md
+# и план к нему.
 *.exe
 *~
 *.zip
-*-arm64
-*-linux-*
+/lanmesh-linux-*
+/natcheck-linux-*
+/lanmesh-relay-*
+/lanmesh-signal-*
 
 # кэш Wrangler (содержит ID аккаунта Cloudflare)
 worker/.wrangler/
