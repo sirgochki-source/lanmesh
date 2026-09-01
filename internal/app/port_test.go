@@ -1,11 +1,8 @@
 package app
 
 import (
-	"errors"
 	"net"
 	"testing"
-
-	"golang.org/x/sys/windows"
 )
 
 // Первый запуск: сохранённого порта нет — берём случайный и просим сохранить.
@@ -59,9 +56,11 @@ func TestPickPortBusyKeepsConfig(t *testing.T) {
 // Занятый порт обязан вернуть ОШИБКУ, а не тихую деградацию в udp4: иначе
 // listenNode истолковал бы случайную коллизию порта (теперь, с PickPort, порт
 // не всегда 0 — конфликт стал возможен) как «нет IPv6-стека» и молча оставил бы
-// узел без IPv6 на весь сеанс. Проверено эмпирически (см. комментарий у
-// listenNode): реальная ошибка Windows на занятый порт — windows.WSAEADDRINUSE
-// (syscall.Errno(10048)), а НЕ вымышленная кросс-платформенная syscall.EADDRINUSE.
+// узел без IPv6 на весь сеанс.
+//
+// Проверяем инвариант, а не форму ошибки: конкретный код различается по
+// платформам (WSAEADDRINUSE против EADDRINUSE), и распознаёт его isAddrInUse —
+// см. errno_windows.go/errno_unix.go.
 func TestListenNodeBusyPortReturnsError(t *testing.T) {
 	busy, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 	if err != nil {
@@ -75,8 +74,8 @@ func TestListenNodeBusyPortReturnsError(t *testing.T) {
 		conn.Close()
 		t.Fatalf("занятый порт %d обязан вернуть ошибку, получили рабочий сокет", port)
 	}
-	if !errors.Is(err, windows.WSAEADDRINUSE) {
-		t.Fatalf("ожидали ошибку занятого порта (WSAEADDRINUSE), получили: %v", err)
+	if !isAddrInUse(err) {
+		t.Fatalf("ошибка занятого порта не распознана isAddrInUse: %v", err)
 	}
 }
 

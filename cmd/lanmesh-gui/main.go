@@ -1051,7 +1051,7 @@ func writeJSON(w http.ResponseWriter, v any, status int) {
 // --- конфиг -----------------------------------------------------------------
 
 func configFilePath() string {
-	dir, err := os.UserConfigDir()
+	dir, err := app.ConfigDir()
 	if err != nil {
 		dir = "."
 	}
@@ -1093,7 +1093,7 @@ func saveConfig(c Config) {
 func setupLogging() *logbuf.Buffer {
 	buf := logbuf.New(200)
 
-	dir, err := os.UserConfigDir()
+	dir, err := app.ConfigDir()
 	if err != nil {
 		log.SetOutput(buf)
 		return buf

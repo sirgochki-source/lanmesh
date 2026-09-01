@@ -22,8 +22,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.org/x/sys/windows"
-
 	"github.com/sirgochki-source/lanmesh/internal/crypto"
 	"github.com/sirgochki-source/lanmesh/internal/discovery/dhtdisc"
 	"github.com/sirgochki-source/lanmesh/internal/logbuf"
@@ -302,7 +300,7 @@ func NewSession(signalURLs []string, stunServers []string, iface string) *Sessio
 // шифруется сознательно: config.json рядом хранит пароли сетей открытым
 // текстом, так что шифрование соседнего файла с адресами ничего не защитило бы.
 func netcachePath() string {
-	dir, err := os.UserConfigDir()
+	dir, err := ConfigDir()
 	if err != nil {
 		return ""
 	}
@@ -551,7 +549,7 @@ func (s *Session) releaseDHT() {
 // dhtNodesPath — файл кэша узлов DHT рядом с identity. Кэш делает вход в DHT
 // быстрым и независимым от bootstrap-узлов: они нужны, по сути, лишь в первый раз.
 func dhtNodesPath() string {
-	dir, err := os.UserConfigDir()
+	dir, err := ConfigDir()
 	if err != nil {
 		return ""
 	}
@@ -671,17 +669,14 @@ func portFree(p int) bool {
 // рабочий, а причина в лог не попадёт (только неверное "работаем только по
 // IPv4"). Разводим: занятый порт возвращаем как явную ошибку, не трогая udp4.
 //
-// Проверено эмпирически (net.ListenUDP на второй бинд того же порта, см.
-// port_test.go/TestListenNodeBusyPortReturnsError): реальная ошибка Windows —
-// syscall.Errno(10048), то есть windows.WSAEADDRINUSE. syscall.EADDRINUSE — это
-// ВЫМЫШЛЕННАЯ кросс-платформенная константа Go (APPLICATION_ERROR+2), которую
-// сетевые вызовы на Windows никогда не возвращают: errors.Is с ней всегда false.
+// Распознаёт занятый порт isAddrInUse: конкретный код ошибки платформенный
+// (WSAEADDRINUSE против EADDRINUSE), см. errno_windows.go/errno_unix.go.
 func listenNode(port int) (*net.UDPConn, error) {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: port})
 	if err == nil {
 		return conn, nil
 	}
-	if errors.Is(err, windows.WSAEADDRINUSE) {
+	if isAddrInUse(err) {
 		return nil, fmt.Errorf("порт %d занят: %w", port, err)
 	}
 	log.Printf("dual-stack сокет недоступен (%v) — работаем только по IPv4", err)
@@ -702,7 +697,7 @@ func (s *Session) bringUpNode() error {
 	s.mu.Unlock()
 	port, savePort := PickPort(savedPort)
 	conn, err := listenNode(port)
-	if err != nil && errors.Is(err, windows.WSAEADDRINUSE) {
+	if err != nil && isAddrInUse(err) {
 		// TOCTOU между PickPort и этим вызовом: PickPort проверяет свободность
 		// пробным bind'ом и сразу закрывает сокет, а listenNode биндит заново —
 		// в этом окне порт мог перехватить кто-то другой (например, второй
@@ -1878,7 +1873,7 @@ func localEndpoints(port int) []string {
 
 // LoadOrCreateIdentity читает PeerID из конфига или создаёт новый при первом запуске.
 func LoadOrCreateIdentity() (proto.PeerID, error) {
-	dir, err := os.UserConfigDir()
+	dir, err := ConfigDir()
 	if err != nil {
 		return proto.PeerID{}, err
 	}
@@ -1892,11 +1887,17 @@ func LoadOrCreateIdentity() (proto.PeerID, error) {
 	if err != nil {
 		return id, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	// Каталог и файл создаёт root (адаптер иначе не поднять) — вернуть их
+	// исходному пользователю обязательно, иначе запуск без sudo больше не
+	// прочитает идентичность и узел сменит адрес в сети. Владельца получает
+	// каждый созданный уровень, а не только последний, см. mkdirAllOwned.
+	// На Windows всё это — no-op.
+	if err := mkdirAllOwned(filepath.Dir(path), 0700); err != nil {
 		return id, err
 	}
 	if err := os.WriteFile(path, []byte(id.String()), 0600); err != nil {
 		return id, err
 	}
+	chownToSudoUser(path)
 	return id, nil
 }
