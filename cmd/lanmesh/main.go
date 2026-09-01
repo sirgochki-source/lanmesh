@@ -1,9 +1,13 @@
 // Command lanmesh — headless-клиент mesh-VPN «как Radmin» (без интерфейса).
-// Графический вариант — cmd/lanmesh-gui.
+// Графический вариант — cmd/lanmesh-gui, он только под Windows.
 //
-// Запуск (из-под администратора, рядом должен лежать wintun.dll):
+// Для запуска нужны права на создание сетевого адаптера:
 //
-//	lanmesh -network myteam -password hunter2
+//	Windows (из-под администратора, wintun.dll вшита в бинарник):
+//	  lanmesh -network myteam -password hunter2
+//	Linux:
+//	  sudo ./lanmesh -network myteam -password hunter2
+//	  (либо один раз `sudo setcap cap_net_admin+ep ./lanmesh` — и без sudo)
 package main
 
 import (
