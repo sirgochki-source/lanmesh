@@ -94,15 +94,13 @@ func startTray(w webview2.WebView) {
 	}()
 }
 
-// trayReconnect переподнимает все сохранённые сети (как /api/reconnect, но из трея).
+// trayReconnect переподнимает все сохранённые сети — тем же кодом, что и
+// /api/reconnect. Раньше здесь была своя копия цикла, и она успела разъехаться:
+// звала AddNetwork вместо AddNetworkMode, то есть молча теряла режим обнаружения
+// и уводила DHT-сети в обычные сигналки.
 func trayReconnect() {
-	cfgMu.Lock()
-	nets := append([]NetProfile(nil), cfg.Networks...)
-	cfgMu.Unlock()
-	for _, p := range nets {
-		if err := sess.AddNetwork(p.Name, p.Password); err != nil {
-			log.Printf("трей: подключение %q: %v", p.Name, err)
-		}
+	for _, e := range pnl.Reconnect() {
+		log.Printf("трей: подключение %s", e)
 	}
 }
 
@@ -146,9 +144,7 @@ func updateTray(mStatus *systray.MenuItem, mPeers []*systray.MenuItem, mConnect,
 		}
 	}
 
-	cfgMu.Lock()
-	saved := len(cfg.Networks)
-	cfgMu.Unlock()
+	saved := len(pnl.Config().Networks)
 
 	if st.Running {
 		mConnect.SetTitle("Подключиться")

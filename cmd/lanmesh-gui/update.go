@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -178,4 +179,13 @@ func cleanupOldExe() {
 		os.Remove(exe + ".old")
 		os.Remove(exe + ".new")
 	}
+}
+
+// writeJSON — ответ в JSON. Своя копия, а не из internal/panel: там она
+// непубличная, а экспортировать её ради двух Windows-only хендлеров значило бы
+// расширять API пакета под частный случай.
+func writeJSON(w http.ResponseWriter, v any, status int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
 }

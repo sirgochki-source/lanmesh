@@ -37,9 +37,15 @@ export function settingsBody(state) {
     + `<button class="btn-ghost" data-act="senddiag">📤 Отправить диагностику</button>`
     + `<label class="chk"><input type="checkbox" id="s-logs" ${state.sendLogs ? 'checked' : ''} data-act="sendlogs"> автоотправка логов</label>`
     + `<div id="diag-note" class="hint"></div>`
-    + `<h2 class="soon-h">Версия и обновления</h2>`
+    + `<h2 class="soon-h">Версия${state.canUpdate ? ' и обновления' : ''}</h2>`
+    // Кнопка проверки обновлений — только там, где автообновление вообще есть.
+    // Оно тянет .exe и существует лишь под Windows: ручки /api/checkupdate и
+    // /api/update регистрирует само окно, и на Linux нажатие ушло бы в 404.
     + `<div class="ver-row"><span>Текущая версия: <b>${esc(state.version || '—')}</b></span>`
-    + `<button class="btn-ghost" data-act="check-update">Проверить обновления</button></div>`
+    + (state.canUpdate
+      ? `<button class="btn-ghost" data-act="check-update">Проверить обновления</button>`
+      : '')
+    + `</div>`
     + `<div id="upd-note" class="hint"></div>`;
 }
 

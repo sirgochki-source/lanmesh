@@ -15,16 +15,21 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sirgochki-source/lanmesh/internal/app"
 	"github.com/sirgochki-source/lanmesh/internal/crypto"
 	"github.com/sirgochki-source/lanmesh/internal/defaults"
 	"github.com/sirgochki-source/lanmesh/internal/invite"
 	"github.com/sirgochki-source/lanmesh/internal/logbuf"
+	"github.com/sirgochki-source/lanmesh/internal/panel"
 	sig "github.com/sirgochki-source/lanmesh/internal/signal"
 )
 
@@ -48,6 +53,12 @@ func main() {
 		"вместе с -dht: разрешить сети ретранслятор как запасной путь (иначе непробиваемые пары не соединятся). Должно совпадать у всех участников — режим вшит в ключ сети")
 	printTag := flag.Bool("tag", false, "напечатать тег сети (нужен для GET /logs) и выйти")
 	sendLogs := flag.Bool("sendlogs", true, "слать диагностику на сигналку (читается по -tag через GET /logs)")
+	withPanel := flag.Bool("panel", false,
+		"поднять веб-панель на http://127.0.0.1:"+strconv.Itoa(panel.DefaultPort)+" — тот же интерфейс, что у GUI на Windows. "+
+			"В этом режиме сети берутся из config.json и туда же сохраняются; -network/-password при наличии добавляются к ним")
+	panelPort := flag.Int("panel-port", panel.DefaultPort, "порт веб-панели (только с -panel)")
+	peersEvery := flag.Duration("peers", time.Minute,
+		"как часто печатать список участников в stderr (0 — не печатать). Единственный способ увидеть, кто в сети, без панели")
 	inviteURL := flag.String("invite", "",
 		"ссылка-приглашение вида lanmesh://join?net=…&pass=… — заполняет имя сети, пароль, "+
 			"сигналки, ретранслятор и режим обнаружения. Явно заданные флаги важнее ссылки")
@@ -118,7 +129,9 @@ func main() {
 		}
 	}
 
-	if *network == "" || *password == "" {
+	// С панелью сеть задавать не обязательно: она возьмёт сохранённые из
+	// config.json, а добавить новую можно прямо в интерфейсе.
+	if (*network == "" || *password == "") && !*withPanel {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -142,14 +155,6 @@ func main() {
 	buf := logbuf.New(200)
 	log.SetOutput(io.MultiWriter(os.Stderr, buf))
 
-	sess := app.NewSession(splitList(*signalURLs), splitList(*stunServers), *iface)
-	sess.EnableLogUpload(buf, *sendLogs)
-	sess.UseRelay(*relay)
-	// У CLI нет конфига, куда GUI сохраняет выбранный порт (см. cmd/lanmesh-gui) —
-	// колбэк сохранения передавать некуда, поэтому nil. -port=0 (по умолчанию)
-	// ведёт себя как раньше: PickPort сам выберет случайный порт при каждом
-	// запуске и ничего сохранять не попросит.
-	sess.SetPort(*port, nil)
 	mode := app.DiscoverySignal
 	if *useDHT {
 		mode = app.DiscoveryDHT
@@ -159,16 +164,28 @@ func main() {
 		log.Printf("обнаружение через DHT: сигналки не используются (ретранслятор %s)",
 			map[bool]string{true: "разрешён", false: "запрещён"}[*dhtRelay])
 	}
+
+	if *withPanel {
+		runWithPanel(buf, *panelPort, *iface, *network, *password, mode, *peersEvery)
+		return
+	}
+
+	sess := app.NewSession(splitList(*signalURLs), splitList(*stunServers), *iface)
+	sess.EnableLogUpload(buf, *sendLogs)
+	sess.UseRelay(*relay)
+	// У CLI нет конфига, куда GUI сохраняет выбранный порт (см. cmd/lanmesh-gui) —
+	// колбэк сохранения передавать некуда, поэтому nil. -port=0 (по умолчанию)
+	// ведёт себя как раньше: PickPort сам выберет случайный порт при каждом
+	// запуске и ничего сохранять не попросит.
+	sess.SetPort(*port, nil)
 	if err := sess.AddNetworkMode(*network, *password, mode); err != nil {
 		log.Fatalf("lanmesh: %v", err)
 	}
 	// Имя сети НЕ логируем — лог уходит на сигналку, а имя ей знать не положено.
 	log.Printf("сеть готова — можно играть. Ctrl+C для выхода.")
 
-	// Держим процесс до Ctrl+C, затем чисто снимаем адаптер.
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
-	<-sigc
+	go printPeers(sess, *peersEvery)
+	waitSignal()
 	sess.Stop()
 }
 
@@ -181,4 +198,81 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// runWithPanel поднимает узел вместе с веб-панелью — тем же кодом, что и GUI на
+// Windows (см. internal/panel.Start): сети берутся из config.json и туда же
+// сохраняются, а интерфейс открывается по http://127.0.0.1:8737.
+//
+// Панель слушает ТОЛЬКО локальный адрес, и это не настраивается: аутентификации
+// у неё нет, а её API умеет заводить сети и отдаёт пароль сети в приглашении.
+// С сервера до неё дотягиваются пробросом порта: ssh -L 8737:127.0.0.1:8737 host.
+func runWithPanel(buf *logbuf.Buffer, port int, iface, network, password, mode string, peersEvery time.Duration) {
+	sess, pnl := panel.Start(panel.Options{Logs: buf, Iface: iface, Port: port})
+
+	// Сеть из флагов добавляется к сохранённым и сама сохраняется — иначе при
+	// следующем запуске её пришлось бы указывать снова, хотя панель для того и
+	// нужна, чтобы не возвращаться к флагам.
+	if network != "" && password != "" {
+		if err := pnl.AddNetwork(network, password, mode); err != nil {
+			log.Fatalf("lanmesh: %v", err)
+		}
+	}
+
+	ln, err := net.Listen("tcp", pnl.Addr())
+	if err != nil {
+		log.Fatalf("панель: %v (занят другой экземпляр? см. -panel-port)", err)
+	}
+	mux := http.NewServeMux()
+	pnl.Routes(mux)
+	go func() {
+		if err := http.Serve(ln, mux); err != nil {
+			log.Fatalf("панель: %v", err)
+		}
+	}()
+	log.Printf("панель: http://%s — Ctrl+C для выхода", pnl.Addr())
+
+	go printPeers(sess, peersEvery)
+	waitSignal()
+	sess.Stop()
+}
+
+// printPeers раз в every печатает состав сетей. Без панели это единственный
+// способ увидеть, кто в сети: список участников иначе попадает только в
+// диагностику, а её отправляют по кнопке, которой у консольного клиента нет.
+//
+// Пишем НАПРЯМУЮ в stderr, а не через log: log здесь тройником заведён на
+// кольцевой буфер, который уезжает на сигналку (-sendlogs). Имена и виртуальные
+// адреса участников каждую минуту отправлять на сервер никто не просил — в
+// диагностике они появляются только по явному действию пользователя.
+func printPeers(sess *app.Session, every time.Duration) {
+	if every <= 0 {
+		return
+	}
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for range t.C {
+		st := sess.State()
+		for _, nv := range st.Networks {
+			if len(nv.Peers) == 0 {
+				fmt.Fprintf(os.Stderr, "сеть %s: никого\n", nv.Name)
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "сеть %s: участников %d\n", nv.Name, len(nv.Peers))
+			for _, p := range nv.Peers {
+				rtt := "—"
+				if p.RttMs >= 0 {
+					rtt = fmt.Sprintf("%.0fмс", p.RttMs)
+				}
+				fmt.Fprintf(os.Stderr, "  %-15s %-20s %-11s rtt=%s\n", p.VirtualIP, p.Name, p.Status, rtt)
+			}
+		}
+	}
+}
+
+// waitSignal держит процесс до Ctrl+C или SIGTERM.
+func waitSignal() {
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+	<-sigc
 }
